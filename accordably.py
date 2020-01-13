@@ -1,77 +1,72 @@
 #!/usr/bin/python
-# vim: et sw=4 ts=4:
 # -*- coding: utf-8 -*-
 #
-# Matomo - free/libre analytics platform
-#
-# @link https://matomo.org
-# @license https://www.gnu.org/licenses/gpl-3.0.html GPL v3 or later
-# @version $Id$
-#
-# For more info see: https://matomo.org/log-analytics/ and https://matomo.org/docs/log-analytics-tool-how-to/
-#
-# Requires Python 3.5, 3.6 or 3.7
-#
-from __future__ import print_function  # this is needed that python2 can run the script until the warning below
+# License: https://www.gnu.org/licenses/gpl-3.0.html GPL v3 or later
+# Copyright: 2012 - 2020 Matomo/Piwik | 2020 Accordably
 
-import sys
-
-if sys.version_info[0] != 3:
-    print('The log importer currently does not support Python 2 any more.')
-    print('Please use Python 3.5, 3.6, 3.7 or 3.8')
-    sys.exit(1)
-
+import argparse
 import base64
 import bz2
-import configparser
-import codecs
+import collections
 import datetime
 import fnmatch
+import glob
 import gzip
-import hashlib
 import http.client
 import inspect
 import itertools
 import json
 import logging
-import argparse
 import os
 import os.path
 import queue
 import re
+import socket
 import ssl
 import sys
+import textwrap
 import threading
 import time
-import urllib.request, urllib.parse, urllib.error
-import urllib.request, urllib.error, urllib.parse
+import urllib.error
+import urllib.error
 import urllib.parse
-import subprocess
-import traceback
-import socket
-import textwrap
-import collections
-import glob
+import urllib.parse
+import urllib.parse
+import urllib.request
+import urllib.request
+import uuid
+from collections import deque
+from urllib.parse import urlsplit
+
+import geoip2.database
+import mmh3
+from appdirs import user_data_dir
+from colorama import init as colorama_init
+from tqdm import tqdm
+
+from device_detector import DeviceDetector
+
+colorama_init()
 
 ##
 ## Constants.
 ##
 
 STATIC_EXTENSIONS = set((
-    'gif jpg jpeg png bmp ico svg svgz ttf otf eot woff woff2 class swf css js xml webp'
-).split())
+                            'gif jpg jpeg png bmp ico svg svgz ttf otf eot woff woff2 class swf css js xml webp'
+                        ).split())
 
 STATIC_FILES = set((
-    'robots.txt'
-).split())
+                       'robots.txt'
+                   ).split())
 
 DOWNLOAD_EXTENSIONS = set((
-    '7z aac arc arj asf asx avi bin csv deb dmg doc docx exe flac flv gz gzip hqx '
-    'ibooks jar json mpg mp2 mp3 mp4 mpeg mov movie msi msp odb odf odg odp '
-    'ods odt ogg ogv pdf phps ppt pptx qt qtm ra ram rar rpm rtf sea sit tar tbz '
-    'bz2 tbz tgz torrent txt wav webm wma wmv wpd xls xlsx xml xsd z zip '
-    'azw3 epub mobi apk'
-).split())
+                              '7z aac arc arj asf asx avi bin csv deb dmg doc docx exe flac flv gz gzip hqx '
+                              'ibooks jar json mpg mp2 mp3 mp4 mpeg mov movie msi msp odb odf odg odp '
+                              'ods odt ogg ogv pdf phps ppt pptx qt qtm ra ram rar rpm rtf sea sit tar tbz '
+                              'bz2 tbz tgz torrent txt wav webm wma wmv wpd xls xlsx xml xsd z zip '
+                              'azw3 epub mobi apk'
+                          ).split())
 
 # If you want to add more bots, take a look at the Matomo Device Detector botlist:
 # https://github.com/matomo-org/device-detector/blob/master/regexes/bots.yml
@@ -116,11 +111,13 @@ MATOMO_EXPECTED_IMAGE = base64.b64decode(
     'R0lGODlhAQABAIAAAAAAAAAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw=='
 )
 
+
 ##
 ## Formats.
 ##
 
 class BaseFormatException(Exception): pass
+
 
 class BaseFormat:
     def __init__(self, name):
@@ -139,6 +136,7 @@ class BaseFormat:
 
     def check_format_line(self, line):
         return False
+
 
 class JsonFormat(BaseFormat):
     def __init__(self, name):
@@ -169,7 +167,7 @@ class JsonFormat(BaseFormat):
     def get(self, key):
         # Some ugly patchs ...
         if key == 'generation_time_milli':
-            self.json[key] =  int(float(self.json[key]) * 1000)
+            self.json[key] = int(float(self.json[key]) * 1000)
         # Patch date format ISO 8601
         elif key == 'date':
             tz = self.json[key][19:]
@@ -181,12 +179,13 @@ class JsonFormat(BaseFormat):
         except KeyError:
             raise BaseFormatException()
 
-    def get_all(self,):
+    def get_all(self, ):
         return self.json
 
     def remove_ignored_groups(self, groups):
         for group in groups:
             del self.json[group]
+
 
 class RegexFormat(BaseFormat):
 
@@ -201,7 +200,7 @@ class RegexFormat(BaseFormat):
     def check_format_line(self, line):
         return self.match(line)
 
-    def match(self,line):
+    def match(self, line):
         if not self.regex:
             return None
         match_result = self.regex.match(line)
@@ -220,15 +219,15 @@ class RegexFormat(BaseFormat):
         except KeyError:
             raise BaseFormatException("Cannot find group '%s'." % key)
 
-    def get_all(self,):
+    def get_all(self, ):
         return self.matched
 
     def remove_ignored_groups(self, groups):
         for group in groups:
             del self.matched[group]
 
-class W3cExtendedFormat(RegexFormat):
 
+class W3cExtendedFormat(RegexFormat):
     FIELDS_LINE_PREFIX = '#Fields: '
     REGEX_UNKNOWN_FIELD = r'(?:".*?"|\S+)'
 
@@ -308,7 +307,7 @@ class W3cExtendedFormat(RegexFormat):
         # Parse the 'Fields: ' line to create the regex to use
         full_regex = []
 
-        expected_fields = type(self).fields.copy() # turn custom field mapping into field => regex mapping
+        expected_fields = type(self).fields.copy()  # turn custom field mapping into field => regex mapping
 
         # if the --w3c-time-taken-millisecs option is used, make sure the time-taken field is interpreted as milliseconds
         if config.options.w3c_time_taken_in_millisecs:
@@ -343,20 +342,21 @@ class W3cExtendedFormat(RegexFormat):
                          " option must be used in order to get accurate generation times.")
 
     def _is_iis(self):
-        return len([line for line in self.header_lines if 'internet information services' in line.lower() or 'iis' in line.lower()]) > 0
+        return len([line for line in self.header_lines if
+                    'internet information services' in line.lower() or 'iis' in line.lower()]) > 0
 
     def _is_time_taken_milli(self):
         return 'generation_time_milli' not in self.regex.pattern
 
-class IisFormat(W3cExtendedFormat):
 
+class IisFormat(W3cExtendedFormat):
     fields = W3cExtendedFormat.fields.copy()
     fields.update({
         'time-taken': r'(?P<generation_time_milli>[.\d]+)',
-        'sc-win32-status': r'(?P<__win32_status>\S+)' # this group is useless for log importing, but capturing it
-                                                     # will ensure we always select IIS for the format instead of
-                                                     # W3C logs when detecting the format. This way there will be
-                                                     # less accidental importing of IIS logs w/o --w3c-time-taken-milli.
+        'sc-win32-status': r'(?P<__win32_status>\S+)'  # this group is useless for log importing, but capturing it
+        # will ensure we always select IIS for the format instead of
+        # W3C logs when detecting the format. This way there will be
+        # less accidental importing of IIS logs w/o --w3c-time-taken-milli.
     })
 
     def __init__(self):
@@ -364,8 +364,8 @@ class IisFormat(W3cExtendedFormat):
 
         self.name = 'iis'
 
-class IncapsulaW3CFormat(W3cExtendedFormat):
 
+class IncapsulaW3CFormat(W3cExtendedFormat):
     # use custom unknown field regex to make resulting regex much simpler
     REGEX_UNKNOWN_FIELD = r'".*?"'
 
@@ -394,8 +394,8 @@ class IncapsulaW3CFormat(W3cExtendedFormat):
             value = '200'
         return value
 
-class ShoutcastFormat(W3cExtendedFormat):
 
+class ShoutcastFormat(W3cExtendedFormat):
     fields = W3cExtendedFormat.fields.copy()
     fields.update({
         'c-status': r'(?P<status>\d+)',
@@ -414,8 +414,8 @@ class ShoutcastFormat(W3cExtendedFormat):
         else:
             return super(ShoutcastFormat, self).get(key)
 
-class AmazonCloudFrontFormat(W3cExtendedFormat):
 
+class AmazonCloudFrontFormat(W3cExtendedFormat):
     fields = W3cExtendedFormat.fields.copy()
     fields.update({
         'x-event': r'(?P<event_action>\S+)',
@@ -446,6 +446,7 @@ class AmazonCloudFrontFormat(W3cExtendedFormat):
         else:
             return super(AmazonCloudFrontFormat, self).get(key)
 
+
 _HOST_PREFIX = r'(?P<host>[\w\-\.]*)(?::\d+)?\s+'
 
 _COMMON_LOG_FORMAT = (
@@ -453,16 +454,16 @@ _COMMON_LOG_FORMAT = (
     r'"(?P<method>\S+)\s+(?P<path>.*?)\s+\S+"\s+(?P<status>\d+)\s+(?P<length>\S+)'
 )
 _NCSA_EXTENDED_LOG_FORMAT = (_COMMON_LOG_FORMAT +
-    r'\s+"(?P<referrer>.*?)"\s+"(?P<user_agent>.*?)"'
-)
+                             r'\s+"(?P<referrer>.*?)"\s+"(?P<user_agent>.*?)"'
+                             )
 _S3_LOG_FORMAT = (
     r'\S+\s+(?P<host>\S+)\s+\[(?P<date>.*?)\s+(?P<timezone>.*?)\]\s+(?P<ip>[\w*.:-]+)\s+'
     r'(?P<userid>\S+)\s+\S+\s+\S+\s+\S+\s+"(?P<method>\S+)\s+(?P<path>.*?)\s+\S+"\s+(?P<status>\d+)\s+\S+\s+(?P<length>\S+)\s+'
     r'\S+\s+\S+\s+\S+\s+"(?P<referrer>.*?)"\s+"(?P<user_agent>.*?)"'
 )
-_ICECAST2_LOG_FORMAT = ( _NCSA_EXTENDED_LOG_FORMAT +
-    r'\s+(?P<session_time>[0-9-]+)'
-)
+_ICECAST2_LOG_FORMAT = (_NCSA_EXTENDED_LOG_FORMAT +
+                        r'\s+(?P<session_time>[0-9-]+)'
+                        )
 _ELB_LOG_FORMAT = (
     r'(?P<date>[0-9-]+T[0-9:]+)\.\S+\s+\S+\s+(?P<ip>[\w*.:-]+):\d+\s+\S+:\d+\s+\S+\s+(?P<generation_time_secs>\S+)\s+\S+\s+'
     r'(?P<status>\d+)\s+\S+\s+\S+\s+(?P<length>\S+)\s+'
@@ -470,9 +471,9 @@ _ELB_LOG_FORMAT = (
 )
 
 _OVH_FORMAT = (
-    r'(?P<ip>\S+)\s+' + _HOST_PREFIX + r'(?P<userid>\S+)\s+\[(?P<date>.*?)\s+(?P<timezone>.*?)\]\s+'
-    r'"\S+\s+(?P<path>.*?)\s+\S+"\s+(?P<status>\S+)\s+(?P<length>\S+)'
-    r'\s+"(?P<referrer>.*?)"\s+"(?P<user_agent>.*?)"'
+        r'(?P<ip>\S+)\s+' + _HOST_PREFIX + r'(?P<userid>\S+)\s+\[(?P<date>.*?)\s+(?P<timezone>.*?)\]\s+'
+                                           r'"\S+\s+(?P<path>.*?)\s+\S+"\s+(?P<status>\S+)\s+(?P<length>\S+)'
+                                           r'\s+"(?P<referrer>.*?)"\s+"(?P<user_agent>.*?)"'
 )
 
 _HAPROXY_FORMAT = (
@@ -497,6 +498,7 @@ FORMATS = {
     'haproxy': RegexFormat('haproxy', _HAPROXY_FORMAT, '%d/%b/%Y:%H:%M:%S.%f')
 }
 
+
 ##
 ## Code.
 ##
@@ -507,9 +509,10 @@ class StoreDictKeyPair(argparse.Action):
         if not my_dict:
             my_dict = {}
         for kv in values.split(","):
-            k,v = kv.split("=")
+            k, v = kv.split("=")
             my_dict[k] = v
         setattr(namespace, self.dest, my_dict)
+
 
 class Configuration:
     """
@@ -529,9 +532,9 @@ class Configuration:
         parser = argparse.ArgumentParser(
             # usage='Usage: %prog [options] log_file [ log_file [...] ]',
             description="Import HTTP access logs to Matomo. "
-                         "log_file is the path to a server access log file (uncompressed, .gz, .bz2, or specify - to read from stdin). "
-                         " You may also import many log files at once (for example set log_file to *.log or *.log.gz)."
-                         " By default, the script will try to produce clean reports and will exclude bots, static files, discard http error and redirects, etc. This is customizable, see below.",
+                        "log_file is the path to a server access log file (uncompressed, .gz, .bz2, or specify - to read from stdin). "
+                        " You may also import many log files at once (for example set log_file to *.log or *.log.gz)."
+                        " By default, the script will try to produce clean reports and will exclude bots, static files, discard http error and redirects, etc. This is customizable, see below.",
             epilog="About Matomo Server Log Analytics: https://matomo.org/log-analytics/ "
                    "              Found a bug? Please create a ticket in https://github.com/matomo-org/matomo-log-analytics/ "
                    "              Please send your suggestions or successful user story to hello@matomo.org "
@@ -539,44 +542,42 @@ class Configuration:
 
         parser.add_argument('file', type=str, nargs='+')
 
-        # Basic auth user
-        parser.add_argument(
-            '--auth-user', dest='auth_user',
-            help="Basic auth user",
-        )
-        # Basic auth password
-        parser.add_argument(
-            '--auth-password', dest='auth_password',
-            help="Basic auth password",
-        )
         parser.add_argument(
             '--debug', '-d', dest='debug', action='count', default=0,
             help="Enable debug output (specify multiple times for more verbose)",
         )
         parser.add_argument(
-            '--debug-tracker', dest='debug_tracker', action='store_true', default=False,
-            help="Appends &debug=1 to tracker requests and prints out the result so the tracker can be debugged. If "
-            "using the log importer results in errors with the tracker or improperly recorded visits, this option can "
-            "be used to find out what the tracker is doing wrong. To see debug tracker output, you must also set the "
-            "[Tracker] debug_on_demand INI config to 1 in your Matomo's config.ini.php file."
+            '--no-fingerprint', dest='no_fingerprint', action='count', default=0,
+            help="Disable user id generation",
+        )
+        parser.add_argument(
+            '--no-country', dest='no_country', action='count', default=0,
+            help="Disable country detection",
+        )
+        parser.add_argument(
+            '--no-os', dest='no_os', action='count', default=0,
+            help="Disable operating system detection",
+        )
+        parser.add_argument(
+            '--no-browser', dest='no_browser', action='count', default=0,
+            help="Disable browser detection",
+        )
+        parser.add_argument(
+            '--no-device', dest='no_device', action='count', default=0,
+            help="Disable device detection",
         )
         parser.add_argument(
             '--debug-request-limit', dest='debug_request_limit', type=int, default=None,
             help="Debug option that will exit after N requests are parsed. Can be used w/ --debug-tracker to limit the "
-            "output of a large log file."
+                 "output of a large log file."
         )
         parser.add_argument(
-            '--url', dest='matomo_url', required=True,
-            help="REQUIRED Your Matomo server URL, eg. https://example.com/matomo/ or https://analytics.example.net",
+            '--url', dest='url', required=False, default="https://accordably.com/api/events/",
+            help="Accordably server URL, eg. https://accordably.com/api/events/",
         )
         parser.add_argument(
-            '--api-url', dest='matomo_api_url',
-            help="This URL will be used to send API requests (use it if your tracker URL differs from UI/API url), "
-            "eg. https://other-example.com/matomo/ or https://analytics-api.example.net",
-        )
-        parser.add_argument(
-            '--tracker-endpoint-path', dest='matomo_tracker_endpoint_path', default='/piwik.php',
-            help="The tracker endpoint path to use when tracking. Defaults to /piwik.php."
+            '--max-hash-collisions', dest='max_hash_collisions', default=100,
+            help="# Todo: "
         )
         parser.add_argument(
             '--dry-run', dest='dry_run',
@@ -597,61 +598,39 @@ class Configuration:
             '--add-sites-new-hosts', dest='add_sites_new_hosts',
             action='store_true', default=False,
             help="When a hostname is found in the log file, but not matched to any website "
-            "in Matomo, automatically create a new website in Matomo with this hostname to "
-            "import the logs"
+                 "in Matomo, automatically create a new website in Matomo with this hostname to "
+                 "import the logs"
         )
         parser.add_argument(
-            '--idsite', dest='site_id',
-            help= ("When specified, "
-                   "data in the specified log files will be tracked for this Matomo site ID."
-                   " The script will not auto-detect the website based on the log line hostname (new websites will not be automatically created).")
+            '--domain', dest='domain',
+            help=("When specified, "
+                  "data in the specified log files will be tracked for this Matomo site ID."
+                  " The script will not auto-detect the website based on the log line hostname (new websites will not be automatically created).")
         )
         parser.add_argument(
             '--idsite-fallback', dest='site_id_fallback',
             help="Default Matomo site ID to use if the hostname doesn't match any "
-            "known Website's URL. New websites will not be automatically created. "
-            "                         Used only if --add-sites-new-hosts or --idsite are not set",
-        )
-        default_config = os.path.abspath(
-            os.path.join(os.path.dirname(__file__),
-            '../../config/config.ini.php'),
+                 "known Website's URL. New websites will not be automatically created. "
+                 "                         Used only if --add-sites-new-hosts or --idsite are not set",
         )
         parser.add_argument(
-            '--config', dest='config_file', default=default_config,
-            help=(
-                "This is only used when --login and --password is not used. "
-                "Matomo will read the configuration file (default: %(default)s) to "
-                "fetch the Super User token_auth from the config file. "
-            )
-        )
-        parser.add_argument(
-            '--login', dest='login',
-            help="You can manually specify the Matomo Super User login"
-        )
-        parser.add_argument(
-            '--password', dest='password',
-            help="You can manually specify the Matomo Super User password"
-        )
-        parser.add_argument(
-            '--token-auth', dest='matomo_token_auth',
-            help="Matomo user token_auth, the token_auth is found in Matomo > Settings > API. "
-                 "You must use a token_auth that has at least 'admin' or 'super user' permission. "
-                 "If you use a token_auth for a non admin user, your users' IP addresses will not be tracked properly. "
+            '--key', dest='key',
+            help="Accordably API Key"
         )
 
         parser.add_argument(
             '--hostname', dest='hostnames', action='append', default=[],
             help="Accepted hostname (requests with other hostnames will be excluded). "
-            " You may use the star character * "
-            " Example: --hostname=*domain.com"
-            " Can be specified multiple times"
+                 " You may use the star character * "
+                 " Example: --hostname=*domain.com"
+                 " Can be specified multiple times"
         )
         parser.add_argument(
             '--exclude-path', dest='excluded_paths', action='append', default=[],
             help="Any URL path matching this exclude-path will not be imported in Matomo. "
-            " You must use the star character *. "
-            " Example: --exclude-path=*/admin/*"
-            " Can be specified multiple times. "
+                 " You must use the star character *. "
+                 " Example: --exclude-path=*/admin/*"
+                 " Can be specified multiple times. "
         )
         parser.add_argument(
             '--exclude-path-from', dest='exclude_path_from',
@@ -669,7 +648,7 @@ class Configuration:
             '--useragent-exclude', dest='excluded_useragents',
             action='append', default=[],
             help="User agents to exclude (in addition to the standard excluded "
-            "user agents). Can be specified multiple times",
+                 "user agents). Can be specified multiple times",
         )
         parser.add_argument(
             '--enable-static', dest='enable_static',
@@ -729,7 +708,7 @@ class Configuration:
         parser.add_argument(
             '--log-hostname', dest='log_hostname', default=None,
             help="Force this hostname for a log format that doesn't include it. All hits "
-            "will seem to come to this host"
+                 "will seem to come to this host"
         )
         parser.add_argument(
             '--skip', dest='skip', default=0, type=int,
@@ -738,11 +717,11 @@ class Configuration:
         parser.add_argument(
             '--recorders', dest='recorders', default=1, type=int,
             help="Number of simultaneous recorders (default: %(default)s). "
-            "It should be set to the number of CPU cores in your server. "
-            "You can also experiment with higher values which may increase performance until a certain point",
+                 "It should be set to the number of CPU cores in your server. "
+                 "You can also experiment with higher values which may increase performance until a certain point",
         )
         parser.add_argument(
-            '--recorder-max-payload-size', dest='recorder_max_payload_size', default=200, type=int,
+            '--recorder-max-payload-size', dest='recorder_max_payload_size', default=1024, type=int,
             help="Maximum number of log entries to record in one tracking request (default: %(default)s). "
         )
         parser.add_argument(
@@ -753,7 +732,7 @@ class Configuration:
         parser.add_argument(
             '--replay-tracking-expected-tracker-file', dest='replay_tracking_expected_tracker_file', default=None,
             help="The expected suffix for tracking request paths. Only logs whose paths end with this will be imported. By default "
-            "requests to the piwik.php file or the matomo.php file will be imported."
+                 "requests to the piwik.php file or the matomo.php file will be imported."
         )
         parser.add_argument(
             '--output', dest='output',
@@ -796,7 +775,7 @@ class Configuration:
                  "as, eg, --w3c-map-field my-date=date. Recognized default fields include: %s\n\n"
                  "Formats that extend the W3C extended log format (like the cloudfront RTMP log format) may define more "
                  "fields that can be mapped."
-                     % (', '.join(list(W3cExtendedFormat.fields.keys())))
+                 % (', '.join(list(W3cExtendedFormat.fields.keys())))
         )
         parser.add_argument(
             '--w3c-time-taken-millisecs', action='store_true', default=False, dest='w3c_time_taken_in_millisecs',
@@ -811,7 +790,8 @@ class Configuration:
                  "Example: --w3c-fields='#Fields: date time c-ip ...'"
         )
         parser.add_argument(
-            '--w3c-field-regex', action=StoreDictKeyPair, metavar='KEY=VAL', default={}, dest="w3c_field_regexes", type=str,
+            '--w3c-field-regex', action=StoreDictKeyPair, metavar='KEY=VAL', default={}, dest="w3c_field_regexes",
+            type=str,
             help="Specify a regex for a field in your W3C extended log file. You can use this option to parse fields the "
                  "importer does not natively recognize and then use one of the --regex-group-to-XXX-cvar options to track "
                  "the field in a custom variable. For example, specifying --w3c-field-regex=sc-win32-status=(?P<win32_status>\\S+) "
@@ -821,8 +801,8 @@ class Configuration:
         parser.add_argument(
             '--title-category-delimiter', dest='title_category_delimiter', default='/',
             help="If --enable-http-errors is used, errors are shown in the page titles report. If you have "
-            "changed General.action_title_category_delimiter in your Matomo configuration, you need to set this "
-            "option to the same value in order to get a pretty page titles report."
+                 "changed General.action_title_category_delimiter in your Matomo configuration, you need to set this "
+                 "option to the same value in order to get a pretty page titles report."
         )
         parser.add_argument(
             '--dump-log-regex', dest='dump_log_regex', action='store_true', default=False,
@@ -839,7 +819,8 @@ class Configuration:
         )
 
         parser.add_argument(
-            '--regex-group-to-visit-cvar', action=StoreDictKeyPair, metavar='KEY=VAL',dest='regex_group_to_visit_cvars_map', default={},
+            '--regex-group-to-visit-cvar', action=StoreDictKeyPair, metavar='KEY=VAL',
+            dest='regex_group_to_visit_cvars_map', default={},
             help="Track an attribute through a custom variable with visit scope instead of through Matomo's normal "
                  "approach. For example, to track usernames as a custom variable instead of through the uid tracking "
                  "parameter, supply --regex-group-to-visit-cvar=\"userid=User Name\". This will track usernames in a "
@@ -848,7 +829,8 @@ class Configuration:
                  "in --log-format-regex can also be used)."
         )
         parser.add_argument(
-            '--regex-group-to-page-cvar', action=StoreDictKeyPair, metavar='KEY=VAL', dest='regex_group_to_page_cvars_map', default={},
+            '--regex-group-to-page-cvar', action=StoreDictKeyPair, metavar='KEY=VAL',
+            dest='regex_group_to_page_cvars_map', default={},
             help="Track an attribute through a custom variable with page scope instead of through Matomo's normal "
                  "approach. For example, to track usernames as a custom variable instead of through the uid tracking "
                  "parameter, supply --regex-group-to-page-cvar=\"userid=User Name\". This will track usernames in a "
@@ -893,9 +875,6 @@ class Configuration:
             help="A number of seconds to add to each date value in the log file."
         )
         parser.add_argument(
-            '--request-suffix', dest='request_suffix', default=None, type=str, help="Extra parameters to append to tracker and API requests."
-        )
-        parser.add_argument(
             '--accept-invalid-ssl-certificate',
             dest='accept_invalid_ssl_certificate', action='store_true',
             default=False,
@@ -910,14 +889,15 @@ class Configuration:
             raise argparse.ArgumentTypeError("Invalid date value '%s'." % value)
 
         if not re.match('[-+][0-9]{4}', timezone):
-            raise argparse.ArgumentTypeError("Invalid date value '%s': expected valid timzeone like +0100 or -1200, got '%s'" % (value, timezone))
+            raise argparse.ArgumentTypeError(
+                "Invalid date value '%s': expected valid timzeone like +0100 or -1200, got '%s'" % (value, timezone))
 
         date = datetime.datetime.strptime(date_str, '%Y-%m-%d %H:%M:%S')
         date -= TimeHelper.timedelta_from_timezone(timezone)
 
         return date
 
-    def _parse_args(self, option_parser, argv = None):
+    def _parse_args(self, option_parser, argv=None):
         """
         Parse the command line args and create self.options and self.filenames.
         """
@@ -978,27 +958,21 @@ class Configuration:
             # validate custom field mappings
             for dummy_custom_name, default_name in self.options.custom_w3c_fields.items():
                 if default_name not in type(format).fields:
-                    fatal_error("custom W3C field mapping error: don't know how to parse and use the '%s' field" % default_name)
+                    fatal_error(
+                        "custom W3C field mapping error: don't know how to parse and use the '%s' field" % default_name)
                     return
 
         if hasattr(self.options, 'w3c_field_regexes'):
             # make sure each custom w3c field regex has a named group
             for field_name, field_regex in self.options.w3c_field_regexes.items():
                 if '(?P<' not in field_regex:
-                    fatal_error("cannot find named group in custom w3c field regex '%s' for field '%s'" % (field_regex, field_name))
+                    fatal_error("cannot find named group in custom w3c field regex '%s' for field '%s'" % (
+                        field_regex, field_name))
                     return
 
-
-        if not (self.options.matomo_url.startswith('http://') or self.options.matomo_url.startswith('https://')):
-            self.options.matomo_url = 'http://' + self.options.matomo_url
-        logging.debug('Matomo Tracker API URL is: %s', self.options.matomo_url)
-
-        if not self.options.matomo_api_url:
-            self.options.matomo_api_url = self.options.matomo_url
-
-        if not (self.options.matomo_api_url.startswith('http://') or self.options.matomo_api_url.startswith('https://')):
-            self.options.matomo_api_url = 'http://' + self.options.matomo_api_url
-        logging.debug('Matomo Analytics API URL is: %s', self.options.matomo_api_url)
+        if not (self.options.url.startswith('http://') or self.options.url.startswith('https://')):
+            self.options.url = 'http://' + self.options.url
+        logging.debug('Accordably Tracker API URL is: %s', self.options.url)
 
         if self.options.recorders < 1:
             self.options.recorders = 1
@@ -1014,112 +988,21 @@ class Configuration:
         if self.options.regex_groups_to_ignore:
             self.options.regex_groups_to_ignore = set(self.options.regex_groups_to_ignore.split(','))
 
-    def __init__(self, argv = None):
+    def __init__(self, argv=None):
         self._parse_args(self._create_parser(), argv)
-
-    def _get_token_auth(self):
-        """
-        If the token auth is not specified in the options, get it from Matomo.
-        """
-        # Get superuser login/password from the options.
-        logging.debug('No token-auth specified')
-
-        if self.options.login and self.options.password:
-            matomo_login = self.options.login
-            matomo_password = self.options.password
-
-            logging.debug('Using credentials: (login = %s, using password = %s)', matomo_login, 'YES' if matomo_password else 'NO')
-            try:
-                api_result = matomo.call_api('UsersManager.createAppSpecificTokenAuth',
-                    userLogin=matomo_login,
-                    passwordConfirmation=matomo_password,
-                    description='Log importer',
-                    expireHours='48',
-                    _token_auth='',
-                    _url=self.options.matomo_api_url,
-                )
-            except urllib.error.URLError as e:
-                fatal_error('error when fetching token_auth from the API: %s' % e)
-
-            try:
-                return api_result['value']
-            except KeyError:
-                # Happens when the credentials are invalid.
-                message = api_result.get('message')
-                fatal_error(
-                    'error fetching authentication token token_auth%s' % (
-                    ': %s' % message if message else '')
-                )
-        else:
-            # Fallback to the given (or default) configuration file, then
-            # get the token from the API.
-            logging.debug(
-                'No credentials specified, reading them from "%s"',
-                self.options.config_file,
-            )
-            config_file = configparser.RawConfigParser(strict=False)
-            success = len(config_file.read(self.options.config_file)) > 0
-            if not success:
-                fatal_error(
-                    "the configuration file" + self.options.config_file + " could not be read. Please check permission. This file must be readable by the user running this script to get the authentication token"
-                )
-
-            updatetokenfile = os.path.abspath(
-                os.path.join(self.options.config_file,
-                    '../../misc/cron/updatetoken.php'),
-            )
-
-            phpBinary = 'php'
-
-            is_windows = sys.platform.startswith('win')
-            if is_windows:
-                try:
-                    processWin = subprocess.Popen('where php.exe', stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                    [stdout, stderr] = processWin.communicate()
-                    if processWin.returncode == 0:
-                        phpBinary = stdout.strip()
-                    else:
-                        fatal_error("We couldn't detect PHP. It might help to add your php.exe to the path or alternatively run the importer using the --login and --password option")
-                except:
-                    fatal_error("We couldn't detect PHP. You can run the importer using the --login and --password option to fix this issue")
-
-            command = [phpBinary, updatetokenfile]
-            if self.options.enable_testmode:
-                command.append('--testmode')
-
-            hostname = urllib.parse.urlparse( self.options.matomo_url ).hostname
-            command.append('--matomo-domain=' + hostname )
-
-            command = subprocess.list2cmdline(command)
-
-#            logging.debug(command);
-
-            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
-            [stdout, stderr] = process.communicate()
-            stdout, stderr = stdout.decode(), stderr.decode()
-            if process.returncode != 0:
-                fatal_error("`" + command + "` failed with error: " + stderr + ".\nReponse code was: " + str(process.returncode) + ". You can alternatively run the importer using the --login and --password option")
-
-            filename = stdout
-            credentials = open(filename, 'r').readline()
-            credentials = credentials.split('\t')
-            return credentials[1]
+        self.run_id = uuid.uuid4().hex
+        self.progress = None
 
     def get_resolver(self):
-        if self.options.site_id:
+        if self.options.domain:
             logging.debug('Resolver: static')
-            return StaticResolver(self.options.site_id)
+            return StaticResolver(self.options.domain)
         else:
             logging.debug('Resolver: dynamic')
             return DynamicResolver()
 
     def init_token_auth(self):
-        if not self.options.matomo_token_auth:
-            try:
-                self.options.matomo_token_auth = self._get_token_auth()
-            except MatomoHttpBase.Error as e:
-                fatal_error(e)
-        logging.debug('Authentication token token_auth is: %s', self.options.matomo_token_auth)
+        logging.debug('Authentication token token_auth is: %s', self.options.key)
 
 
 class Statistics:
@@ -1133,6 +1016,7 @@ class Statistics:
         Simple integers cannot be used by multithreaded programs. See:
         https://stackoverflow.com/questions/6320107/are-python-ints-thread-safe
         """
+
         def __init__(self):
             # itertools.count's implementation in C does not release the GIL and
             # therefore is thread-safe.
@@ -1153,9 +1037,9 @@ class Statistics:
         self.time_start = None
         self.time_stop = None
 
-        self.matomo_sites = set()                # sites ID
-        self.matomo_sites_created = []           # (hostname, site ID)
-        self.matomo_sites_ignored = set()        # hostname
+        self.matomo_sites = set()  # sites ID
+        self.matomo_sites_created = []  # (hostname, site ID)
+        self.matomo_sites_ignored = set()  # hostname
 
         self.count_lines_parsed = self.Counter()
         self.count_lines_recorded = self.Counter()
@@ -1226,7 +1110,7 @@ class Statistics:
             invalid_lines_summary = '''Invalid log lines
 -----------------
 
-The following lines were not tracked by Matomo, either due to a malformed tracker request or error in the tracker:
+The following lines were not tracked by Accordably, either due to a malformed tracker request or error in the tracker:
 
 %s
 
@@ -1249,84 +1133,58 @@ The following lines were not tracked by Matomo, either due to a malformed tracke
         %(count_lines_static)d requests to static resources (css, js, images, ico, ttf...)
         %(count_lines_skipped_downloads)d requests to file downloads did not match any --download-extensions
 
-Website import summary
-----------------------
-
-    %(count_lines_recorded)d requests imported to %(total_sites)d sites
-        %(total_sites_existing)d sites already existed
-        %(total_sites_created)d sites were created:
-%(sites_created)s
-    %(total_sites_ignored)d distinct hostnames did not match any existing site:
-%(sites_ignored)s
-%(sites_ignored_tips)s
 
 Performance summary
 -------------------
 
     Total time: %(total_time)d seconds
     Requests imported per second: %(speed_recording)s requests per second
-
-Processing your log data
-------------------------
-
-    In order for your logs to be processed by Matomo, you may need to run the following command:
-     ./console core:archive --force-all-websites --force-all-periods=315576000 --force-date-last-n=1000 --url='%(url)s'
 ''' % {
 
-    'count_lines_recorded': self.count_lines_recorded.value,
-    'count_lines_downloads': self.count_lines_downloads.value,
-    'total_lines_ignored': sum([
-            self.count_lines_invalid.value,
-            self.count_lines_filtered.value,
-            self.count_lines_skipped_user_agent.value,
-            self.count_lines_skipped_http_errors.value,
-            self.count_lines_skipped_http_redirects.value,
-            self.count_lines_static.value,
-            self.count_lines_skipped_downloads.value,
-            self.count_lines_no_site.value,
-            self.count_lines_hostname_skipped.value,
-        ]),
-    'count_lines_invalid': self.count_lines_invalid.value,
-    'count_lines_filtered': self.count_lines_filtered.value,
-    'count_lines_skipped_user_agent': self.count_lines_skipped_user_agent.value,
-    'count_lines_skipped_http_errors': self.count_lines_skipped_http_errors.value,
-    'count_lines_skipped_http_redirects': self.count_lines_skipped_http_redirects.value,
-    'count_lines_static': self.count_lines_static.value,
-    'count_lines_skipped_downloads': self.count_lines_skipped_downloads.value,
-    'count_lines_no_site': self.count_lines_no_site.value,
-    'count_lines_hostname_skipped': self.count_lines_hostname_skipped.value,
-    'total_sites': len(self.matomo_sites),
-    'total_sites_existing': len(self.matomo_sites - set(site_id for hostname, site_id in self.matomo_sites_created)),
-    'total_sites_created': len(self.matomo_sites_created),
-    'sites_created': self._indent_text(
-            ['%s (ID: %d)' % (hostname, site_id) for hostname, site_id in self.matomo_sites_created],
-            level=3,
-        ),
-    'total_sites_ignored': len(self.matomo_sites_ignored),
-    'sites_ignored': self._indent_text(
-            self.matomo_sites_ignored, level=3,
-        ),
-    'sites_ignored_tips': '''
-        TIPs:
-         - if one of these hosts is an alias host for one of the websites
-           in Matomo, you can add this host as an "Alias URL" in Settings > Websites.
-         - use --add-sites-new-hosts if you wish to automatically create
-           one website for each of these hosts in Matomo rather than discarding
-           these requests.
-         - use --idsite-fallback to force all these log lines with a new hostname
-           to be recorded in a specific idsite (for example for troubleshooting/visualizing the data)
-         - use --idsite to force all lines in the specified log files
-           to be all recorded in the specified idsite
-         - or you can also manually create a new Website in Matomo with the URL set to this hostname
+            'count_lines_recorded': self.count_lines_recorded.value,
+            'count_lines_downloads': self.count_lines_downloads.value,
+            'total_lines_ignored': sum([
+                self.count_lines_invalid.value,
+                self.count_lines_filtered.value,
+                self.count_lines_skipped_user_agent.value,
+                self.count_lines_skipped_http_errors.value,
+                self.count_lines_skipped_http_redirects.value,
+                self.count_lines_static.value,
+                self.count_lines_skipped_downloads.value,
+                self.count_lines_no_site.value,
+                self.count_lines_hostname_skipped.value,
+            ]),
+            'count_lines_invalid': self.count_lines_invalid.value,
+            'count_lines_filtered': self.count_lines_filtered.value,
+            'count_lines_skipped_user_agent': self.count_lines_skipped_user_agent.value,
+            'count_lines_skipped_http_errors': self.count_lines_skipped_http_errors.value,
+            'count_lines_skipped_http_redirects': self.count_lines_skipped_http_redirects.value,
+            'count_lines_static': self.count_lines_static.value,
+            'count_lines_skipped_downloads': self.count_lines_skipped_downloads.value,
+            'count_lines_no_site': self.count_lines_no_site.value,
+            'count_lines_hostname_skipped': self.count_lines_hostname_skipped.value,
+            'total_sites': len(self.matomo_sites),
+            'total_sites_existing': len(
+                self.matomo_sites - set(site_id for hostname, site_id in self.matomo_sites_created)),
+            'total_sites_created': len(self.matomo_sites_created),
+            'sites_created': self._indent_text(
+                ['%s (ID: %d)' % (hostname, site_id) for hostname, site_id in self.matomo_sites_created],
+                level=3,
+            ),
+            'total_sites_ignored': len(self.matomo_sites_ignored),
+            'sites_ignored': self._indent_text(
+                self.matomo_sites_ignored, level=3,
+            ),
+            'sites_ignored_tips': '''
 ''' if self.matomo_sites_ignored else '',
-    'total_time': self.time_stop - self.time_start,
-    'speed_recording': self._round_value(self._compute_speed(
-            self.count_lines_recorded.value,
-            self.time_start, self.time_stop,
-        )),
-    'url': config.options.matomo_api_url,
-    'invalid_lines': invalid_lines_summary
-}))
+            'total_time': self.time_stop - self.time_start,
+            'speed_recording': self._round_value(self._compute_speed(
+                self.count_lines_recorded.value,
+                self.time_start, self.time_stop,
+            )),
+            'url': config.options.url,
+            'invalid_lines': invalid_lines_summary
+        }))
 
     ##
     ## The monitor is a thread that prints a short summary each second.
@@ -1337,13 +1195,16 @@ Processing your log data
         while not self.monitor_stop:
             current_total = stats.count_lines_recorded.value
             time_elapsed = time.time() - self.time_start
-            print(('%d lines parsed, %d lines recorded, %d records/sec (avg), %d records/sec (current)' % (
-                stats.count_lines_parsed.value,
-                current_total,
-                current_total / time_elapsed if time_elapsed != 0 else 0,
-                (current_total - latest_total_recorded) / config.options.show_progress_delay,
-            )))
+            # print(('%d lines parsed, %d lines recorded, %d records/sec (avg), %d records/sec (current)' % (
+            #     stats.count_lines_parsed.value,
+            #     current_total,
+            #     current_total / time_elapsed if time_elapsed != 0 else 0,
+            #     (current_total - latest_total_recorded) / config.options.show_progress_delay,
+            # )))
             latest_total_recorded = current_total
+            if config.progress:
+                config.progress.set_postfix_str(
+                    f"(req/s {current_total / time_elapsed if time_elapsed != 0 else 0:3.0f})")
             time.sleep(config.options.show_progress_delay)
 
     def start_monitor(self):
@@ -1353,6 +1214,7 @@ Processing your log data
 
     def stop_monitor(self):
         self.monitor_stop = True
+
 
 class TimeHelper:
 
@@ -1366,6 +1228,7 @@ class TimeHelper:
         minutes = n % 100 * sign
 
         return datetime.timedelta(hours=hours, minutes=minutes)
+
 
 class UrlHelper:
 
@@ -1396,9 +1259,9 @@ class UrlHelper:
                     element = element[idx]
 
                 # set the value in the final container we navigated to
-                if not indices[-1]: # last indice is '[]'
+                if not indices[-1]:  # last indice is '[]'
                     element.append(value)
-                else: # last indice has a key, eg, '[abc]'
+                else:  # last indice has a key, eg, '[abc]'
                     element[indices[-1]] = value
             else:
                 final_args[key] = value
@@ -1433,10 +1296,11 @@ class UrlHelper:
             result.append(d[str(i)])
         return result
 
+
 class MatomoHttpBase:
     class Error(Exception):
 
-        def __init__(self, message, code = None):
+        def __init__(self, message, code=None):
             super(MatomoHttpBase.Error, self).__init__(message)
 
             self.code = code
@@ -1464,7 +1328,7 @@ class MatomoHttpUrllib(MatomoHttpBase):
         arguments, to embed authentication, etc.
         """
         if url is None:
-            url = config.options.matomo_url
+            url = config.options.url
         headers = headers or {}
 
         if data is None:
@@ -1474,32 +1338,14 @@ class MatomoHttpUrllib(MatomoHttpBase):
         elif not isinstance(data, str) and headers['Content-type'] == 'application/json':
             data = json.dumps(data)
 
-            if args:
-                path = path + '?' + urllib.parse.urlencode(args)
-
-        if config.options.request_suffix:
-            path = path + ('&' if '?' in path else '?') + config.options.request_suffix
-
-        headers['User-Agent'] = 'Matomo/LogImport'
+        headers['User-Agent'] = 'Accordably/LogImport'
 
         try:
             timeout = config.options.request_timeout
         except:
-            timeout = None # the config global object may not be created at this point
+            timeout = None  # the config global object may not be created at this point
 
-        request = urllib.request.Request(url + path, data.encode("utf-8"), headers)
-
-        # Handle basic auth if auth_user set
-        try:
-            auth_user = config.options.auth_user
-            auth_password = config.options.auth_password
-        except:
-            auth_user = None
-            auth_password = None
-
-        if auth_user is not None:
-            base64string = base64.encodebytes('{}:{}'.format(auth_user, auth_password).encode()).decode().replace('\n', '')
-            request.add_header("Authorization", "Basic %s" % base64string)
+        request = urllib.request.Request(url, data.encode("utf-8"), headers)
 
         # Use non-default SSL context if invalid certificates shall be
         # accepted.
@@ -1514,7 +1360,7 @@ class MatomoHttpUrllib(MatomoHttpBase):
         opener = urllib.request.build_opener(
             self.RedirectHandlerWithLogging(),
             urllib.request.HTTPSHandler(**https_handler_args))
-        response = opener.open(request, timeout = timeout)
+        response = opener.open(request, timeout=timeout)
         result = response.read()
         response.close()
         return result
@@ -1525,22 +1371,22 @@ class MatomoHttpUrllib(MatomoHttpBase):
         formatting, etc.
         """
         args = {
-            'module' : 'API',
-            'format' : 'json',
-            'method' : method,
-            'filter_limit' : '-1',
+            'module': 'API',
+            'format': 'json',
+            'method': method,
+            'filter_limit': '-1',
         }
-        # token_auth, by default, is taken from config.
+
         token_auth = kwargs.pop('_token_auth', None)
         if token_auth is None:
-            token_auth = config.options.matomo_token_auth
-        if token_auth:
-            args['token_auth'] = token_auth
+            token_auth = config.options.key
+        headers = {
+            "Authorization": f"Token {token_auth}",
+        }
 
         url = kwargs.pop('_url', None)
         if url is None:
-            url = config.options.matomo_api_url
-
+            url = config.options.url
 
         if kwargs:
             args.update(kwargs)
@@ -1557,17 +1403,15 @@ class MatomoHttpUrllib(MatomoHttpBase):
             else:
                 final_args.append((key, value))
 
-
-#        logging.debug('%s' % final_args)
-#        logging.debug('%s' % url)
-
-        res = self._call('/', final_args, url=url)
-
+        #        logging.debug('%s' % final_args)
+        #        logging.debug('%s' % url)
+        print("calling api")
+        res = self._call('/', final_args, url=url, headers=headers)
 
         try:
             return json.loads(res)
         except ValueError:
-            raise urllib.error.URLError('Matomo returned an invalid response: ' + res)
+            raise urllib.error.URLError('Accordably returned an invalid response: ' + res)
 
     def _call_wrapper(self, func, expected_response, on_failure, *args, **kwargs):
         """
@@ -1586,7 +1430,7 @@ class MatomoHttpUrllib(MatomoHttpBase):
                     raise urllib.error.URLError(error_message)
                 return response
             except (urllib.error.URLError, http.client.HTTPException, ValueError, socket.timeout) as e:
-                logging.info('Error when connecting to Matomo: %s', e)
+                logging.info('Error when connecting to Accordably: %s', e)
 
                 code = None
                 if isinstance(e, urllib.error.HTTPError):
@@ -1621,10 +1465,11 @@ class MatomoHttpUrllib(MatomoHttpBase):
 
     def call(self, path, args, expected_content=None, headers=None, data=None, on_failure=None):
         return self._call_wrapper(self._call, expected_content, on_failure, path, args, headers,
-                                    data=data)
+                                  data=data)
 
     def call_api(self, method, **kwargs):
         return self._call_wrapper(self._call_api, None, None, method, **kwargs)
+
 
 ##
 ## Resolvers.
@@ -1637,24 +1482,21 @@ class StaticResolver:
     Always return the same site ID, specified in the configuration.
     """
 
-    def __init__(self, site_id):
-        self.site_id = site_id
+    def __init__(self, domain):
+        self.domain = domain
         # Go get the main URL
-        site = matomo.call_api(
-            'SitesManager.getSiteFromId', idSite=self.site_id
-        )
-        if site.get('result') == 'error':
-            fatal_error(
-                "cannot get the main URL of this site: %s" % site.get('message')
-            )
+        site = {
+            "main_url": self.domain
+        }
         self._main_url = site['main_url']
-        stats.matomo_sites.add(self.site_id)
+        stats.matomo_sites.add(self.domain)
 
     def resolve(self, hit):
-        return (self.site_id, self._main_url)
+        return (self.domain, self._main_url)
 
     def check_format(self, format):
         pass
+
 
 class DynamicResolver:
     """
@@ -1686,7 +1528,7 @@ class DynamicResolver:
                 return res[0]['idsite']
 
             # The site doesn't exist.
-            logging.debug('No Matomo site found for the hostname: %s', hit.host)
+            logging.debug('No Accordably site found for the hostname: %s', hit.host)
             if config.options.site_id_fallback is not None:
                 logging.debug('Using default site for hostname: %s', hit.host)
                 return config.options.site_id_fallback
@@ -1694,16 +1536,16 @@ class DynamicResolver:
                 if config.options.dry_run:
                     # Let's just return a fake ID.
                     return 0
-                logging.debug('Creating a Matomo site for hostname %s', hit.host)
+                logging.debug('Creating a Accordably site for hostname %s', hit.host)
                 result = matomo.call_api(
                     'SitesManager.addSite',
                     siteName=hit.host,
                     urls=[main_url],
                 )
                 if result.get('result') == 'error':
-                    logging.error("Couldn't create a Matomo site for host %s: %s",
-                        hit.host, result.get('message'),
-                    )
+                    logging.error("Couldn't create a Accordably site for host %s: %s",
+                                  hit.host, result.get('message'),
+                                  )
                     return None
                 else:
                     site_id = result['value']
@@ -1774,8 +1616,9 @@ class DynamicResolver:
         elif format.regex is not None and 'host' not in format.regex.groupindex and not config.options.log_hostname:
             fatal_error(
                 "the selected log format doesn't include the hostname: you must "
-                "specify the Matomo site ID with the --idsite argument"
+                "specify the Accordably site ID with the --idsite argument"
             )
+
 
 class Recorder:
     """
@@ -1787,10 +1630,27 @@ class Recorder:
 
     def __init__(self):
         self.queue = queue.Queue(maxsize=2)
-
+        self.hashes = deque(maxlen=config.options.max_hash_collisions)
+        self.collisions = 0
         # if bulk tracking disabled, make sure we can store hits outside of the Queue
         if not config.options.use_bulk_tracking:
             self.unrecorded_hits = []
+
+    def get_hash(self, args, seed=0):
+        params = ''.join(''.join([str(a) for a in args.values()]))
+
+        hash, _ = mmh3.hash64(
+            params,
+            signed=True,
+            seed=seed
+        )
+        # hashlib.sha256(f"{seed}{params}".encode("utf-8")).hexdigest()
+
+        if hash in self.hashes:
+            self.collisions += 1
+            return self.get_hash(args=args, seed=seed + 1)
+        self.hashes.append(hash)
+        return hash
 
     @classmethod
     def launch(cls, recorder_count):
@@ -1842,7 +1702,7 @@ class Recorder:
                 try:
                     self._record_hits(hits)
                 except MatomoHttpBase.Error as e:
-                    fatal_error(e, hits[0].filename, hits[0].lineno) # approximate location of error
+                    fatal_error(e, hits[0].filename, hits[0].lineno)  # approximate location of error
             self.queue.task_done()
 
     def _run_single(self):
@@ -1878,6 +1738,16 @@ class Recorder:
         date, time = date.isoformat(sep=' ').split()
         return '%s %s' % (date, time.replace('-', ':'))
 
+    def get_country(self, ip):
+        return location.country(ip).country.iso_code
+
+    def get_user_id(self, ip, user_agent):
+        hash, _ = mmh3.hash64(
+            f"{ip}-{user_agent}",
+            signed=True,
+        )
+        return hash
+
     def _get_hit_args(self, hit):
         """
         Returns the args used in tracking a hit, without the token_auth.
@@ -1910,66 +1780,106 @@ class Recorder:
                 hit.add_visit_custom_var("Not-Bot", hit.user_agent)
 
         hit.add_page_custom_var("HTTP-code", hit.status)
+        url_parts = urlsplit(url)
+        url_path = url_parts.path + f"?{url_parts.query}" \
+            if url_parts.query else "" + f"#{url_parts.fragment}" if url_parts.fragment else ""
+        if hit.referrer:
+            ref_parts = urlsplit(hit.referrer)
+            ref_domain = ref_parts.netloc
+            ref_path = ref_parts.path + f"?{ref_parts.query}" \
+                if ref_parts.query else "" + f"#{ref_parts.fragment}" if ref_parts.fragment else ""
+        else:
+            ref_domain = ""
+            ref_path = ""
 
         args = {
-            'rec': '1',
-            'apiv': '1',
-            'url': url,
-            'urlref': hit.referrer[:1024],
-            'cip': hit.ip,
-            'cdt': self.date_to_matomo(hit.date),
-            'idsite': site_id,
-            'dp': '0' if config.options.reverse_dns else '1',
-            'ua': hit.user_agent
+            'url_domain': site_id,
+            'url_path': url_path if url_path else "/",
+            'referrer_domain': ref_domain,
+            'referrer_path': ref_path,
+            'referrer_source': "",
+            'user': self.get_user_id(ip=hit.ip, user_agent=hit.user_agent),
+            'country': self.get_country(ip=hit.ip),
+            'os_name': hit.device.os_name(),
+            'os_version': hit.device.os_version(),
+            'browser_name': hit.device.client_name(),
+            'browser_type': hit.device.client_type(),
+            'browser_version': hit.device.client_version(),
+            'device_name': hit.device.device_brand_name(),
+            'device_model': hit.device.device_model(),
+            'device_type': hit.device.device_type(),
+            'created': self.date_to_matomo(hit.date),
+            'domain': site_id,
         }
 
-        if config.options.replay_tracking:
-            # prevent request to be force recorded when option replay-tracking
-            args['rec'] = '0'
+        args['hash'] = self.get_hash(args)
 
-        # idsite is already determined by resolver
-        if 'idsite' in hit.args:
-            del hit.args['idsite']
+        if config.options.no_fingerprint:
+            args['user'] = 0
 
-        args.update(hit.args)
+        if config.options.no_country:
+            args['country'] = ""
 
-        if hit.is_download:
-            args['download'] = args['url']
+        if config.options.no_os:
+            args['os_name'] = ""
+            args['os_version'] = ""
 
-        if config.options.enable_bots:
-            args['bots'] = '1'
+        if config.options.no_browser:
+            args['browser_name'] = ""
+            args['browser_type'] = ""
+            args['browser_version'] = ""
 
-        if hit.is_error or hit.is_redirect:
-            args['action_name'] = '%s%sURL = %s%s' % (
-                hit.status,
-                config.options.title_category_delimiter,
-                urllib.parse.quote(args['url'], ''),
-                ("%sFrom = %s" % (
-                    config.options.title_category_delimiter,
-                    urllib.parse.quote(args['urlref'], '')
-                ) if args['urlref'] != ''  else '')
-            )
+        if config.options.no_device:
+            args['device_name'] = ""
+            args['device_model'] = ""
+            args['device_type'] = ""
 
-        if hit.generation_time_milli > 0:
-            args['pf_srv'] = int(hit.generation_time_milli)
-
-        if hit.event_category and hit.event_action:
-            args['e_c'] = hit.event_category
-            args['e_a'] = hit.event_action
-
-            if hit.event_name:
-                args['e_n'] = hit.event_name
-
-        if hit.length:
-            args['bw_bytes'] = hit.length
-
-        # convert custom variable args to JSON
-        if 'cvar' in args and not isinstance(args['cvar'], str):
-            args['cvar'] = json.dumps(args['cvar'])
-
-        if '_cvar' in args and not isinstance(args['_cvar'], str):
-            args['_cvar'] = json.dumps(args['_cvar'])
-
+        # if config.options.replay_tracking:
+        #     # prevent request to be force recorded when option replay-tracking
+        #     args['rec'] = '0'
+        #
+        # # idsite is already determined by resolver
+        # if 'idsite' in hit.args:
+        #     del hit.args['idsite']
+        #
+        # args.update(hit.args)
+        #
+        # if hit.is_download:
+        #     args['download'] = args['url']
+        #
+        # if config.options.enable_bots:
+        #     args['bots'] = '1'
+        #
+        # if hit.is_error or hit.is_redirect:
+        #     args['action_name'] = '%s%sURL = %s%s' % (
+        #         hit.status,
+        #         config.options.title_category_delimiter,
+        #         urllib.parse.quote(args['url'], ''),
+        #         ("%sFrom = %s" % (
+        #             config.options.title_category_delimiter,
+        #             urllib.parse.quote(args['urlref'], '')
+        #         ) if args['urlref'] != '' else '')
+        #     )
+        #
+        # if hit.generation_time_milli > 0:
+        #     args['pf_srv'] = int(hit.generation_time_milli)
+        #
+        # if hit.event_category and hit.event_action:
+        #     args['e_c'] = hit.event_category
+        #     args['e_a'] = hit.event_action
+        #
+        #     if hit.event_name:
+        #         args['e_n'] = hit.event_name
+        #
+        # if hit.length:
+        #     args['bw_bytes'] = hit.length
+        #
+        # # convert custom variable args to JSON
+        # if 'cvar' in args and not isinstance(args['cvar'], str):
+        #     args['cvar'] = json.dumps(args['cvar'])
+        #
+        # if '_cvar' in args and not isinstance(args['_cvar'], str):
+        #     args['_cvar'] = json.dumps(args['_cvar'])
         return UrlHelper.convert_array_args(args)
 
     def _get_host_with_protocol(self, host, main_url):
@@ -1984,41 +1894,28 @@ class Recorder:
         """
         if not config.options.dry_run:
             data = {
-                'token_auth': config.options.matomo_token_auth,
-                'requests': [self._get_hit_args(hit) for hit in hits]
+                'requests': [self._get_hit_args(hit) for hit in hits],
+                'run': config.run_id
             }
             try:
                 args = {}
-
-                if config.options.debug_tracker:
-                    args['debug'] = '1'
-
                 response = matomo.call(
-                    config.options.matomo_tracker_endpoint_path, args=args,
+                    config.options.url, args=args,
                     expected_content=None,
-                    headers={'Content-type': 'application/json'},
+                    headers={'Content-type': 'application/json', 'Authorization': f'Token {config.options.key}'},
                     data=data,
                     on_failure=self._on_tracking_failure
                 )
-
-                if config.options.debug_tracker:
-                    logging.debug('tracker response:\n%s' % response)
 
                 # check for invalid requests
                 try:
                     response = json.loads(response)
                 except:
                     logging.info("bulk tracking returned invalid JSON")
-
-                    # don't display the tracker response if we're debugging the tracker.
-                    # debug tracker output will always break the normal JSON output.
-                    if not config.options.debug_tracker:
-                        logging.info("tracker response:\n%s" % response)
-
                     response = {}
 
                 if ('invalid_indices' in response and isinstance(response['invalid_indices'], list) and
-                    response['invalid_indices']):
+                        response['invalid_indices']):
                     invalid_count = len(response['invalid_indices'])
 
                     invalid_lines = [str(hits[index].lineno) for index in response['invalid_indices']]
@@ -2026,13 +1923,15 @@ class Recorder:
 
                     stats.invalid_lines.extend(invalid_lines)
 
-                    logging.info("The Matomo tracker identified %s invalid requests on lines: %s" % (invalid_count, invalid_lines_str))
+                    logging.info("The Accordably tracker identified %s invalid requests on lines: %s" % (
+                        invalid_count, invalid_lines_str))
                 elif 'invalid' in response and response['invalid'] > 0:
-                    logging.info("The Matomo tracker identified %s invalid requests." % response['invalid'])
+                    logging.info("The Accordably tracker identified %s invalid requests." % response['invalid'])
             except MatomoHttpBase.Error as e:
                 # if the server returned 400 code, BulkTracking may not be enabled
                 if e.code == 400:
-                    fatal_error("Server returned status 400 (Bad Request).\nIs the BulkTracking plugin disabled?", hits[0].filename, hits[0].lineno)
+                    fatal_error("Server returned status 400 (Bad Request).\nIs the BulkTracking plugin disabled?",
+                                hits[0].filename, hits[0].lineno)
 
                 raise
 
@@ -2063,10 +1962,12 @@ class Recorder:
 
         return response['message']
 
+
 class Hit:
     """
     It's a simple container.
     """
+
     def __init__(self, **kwargs):
         for key, value in kwargs.items():
             setattr(self, key, value)
@@ -2103,11 +2004,13 @@ class Hit:
             self.args[api_arg_name] = {}
 
         if isinstance(self.args[api_arg_name], str):
-            logging.debug("Ignoring custom %s variable addition [ %s = %s ], custom var already set to string." % (api_arg_name, key, value))
+            logging.debug("Ignoring custom %s variable addition [ %s = %s ], custom var already set to string." % (
+                api_arg_name, key, value))
             return
 
         index = len(self.args[api_arg_name]) + 1
         self.args[api_arg_name][index] = [key, value]
+
 
 class Parser:
     """
@@ -2171,6 +2074,13 @@ class Parser:
                 else:
                     stats.count_lines_skipped_user_agent.increment()
                     return False
+        if hit.device.is_bot():
+            if config.options.enable_bots:
+                hit.is_robot = True
+                return True
+            else:
+                stats.count_lines_skipped_user_agent.increment()
+                return False
         return True
 
     def check_http_error(self, hit):
@@ -2202,10 +2112,10 @@ class Parser:
                 return False
         # By default, all paths are included.
         if config.options.included_paths:
-           for included_path in config.options.included_paths:
-               if fnmatch.fnmatch(hit.path, included_path):
-                   return True
-           return False
+            for included_path in config.options.included_paths:
+                if fnmatch.fnmatch(hit.path, included_path):
+                    return True
+            return False
         return True
 
     @staticmethod
@@ -2272,7 +2182,7 @@ class Parser:
         limit = 100000
         while not format and lineno < limit:
             line = file.readline()
-            if not line: # if at eof, don't keep looping
+            if not line:  # if at eof, don't keep looping
                 break
 
             lineno = lineno + 1
@@ -2286,8 +2196,9 @@ class Parser:
             pass
 
         if not format:
-            fatal_error("cannot automatically determine the log format using the first %d lines of the log file. " % limit +
-                        "\nMaybe try specifying the format with the --log-format-name command line argument." )
+            fatal_error(
+                "cannot automatically determine the log format using the first %d lines of the log file. " % limit +
+                "\nMaybe try specifying the format with the --log-format-name command line argument.")
             return
 
         logging.debug('Format %s is the best match', format.name)
@@ -2304,10 +2215,12 @@ class Parser:
                 pass
 
         if host:
-            if config.options.exclude_host and len(config.options.exclude_host) > 0 and host in config.options.exclude_host:
+            if config.options.exclude_host and len(
+                    config.options.exclude_host) > 0 and host in config.options.exclude_host:
                 return (True, 'host matched --exclude-host')
 
-            if config.options.include_host and len(config.options.include_host) > 0 and host not in config.options.include_host:
+            if config.options.include_host and len(
+                    config.options.include_host) > 0 and host not in config.options.include_host:
                 return (True, 'host did not match --include-host')
 
         if config.options.exclude_older_than and hit.date < config.options.exclude_older_than:
@@ -2322,6 +2235,7 @@ class Parser:
         """
         Parse the specified filename and insert hits in the queue.
         """
+
         def invalid_line(line, reason):
             stats.count_lines_invalid.increment()
             if config.options.debug >= 2:
@@ -2348,8 +2262,8 @@ class Parser:
                     open_func = open
                     file = open_func(filename, mode='r', encoding=config.options.encoding, errors="surrogateescape")
 
-        if config.options.show_progress:
-            print(('Parsing log %s...' % filename))
+        # if config.options.show_progress:
+        #     print(('Parsing log %s...' % filename))
 
         if config.format:
             # The format was explicitly specified.
@@ -2395,195 +2309,206 @@ class Parser:
 
         hits = []
         lineno = -1
-        while True:
-            line = file.readline()
-            if not line: break
-            lineno = lineno + 1
+        bar_format = "{l_bar}{bar} | {postfix} [{elapsed}<{remaining}]"
+        with tqdm(total=os.path.getsize(filename), bar_format=bar_format) as pbar:
+            pbar.set_description(f"Processing {filename}")
+            config.progress = pbar
+            while True:
+                line = file.readline()
+                pbar.update(len(line))
+                if not line: break
+                lineno = lineno + 1
 
-            stats.count_lines_parsed.increment()
-            if stats.count_lines_parsed.value <= config.options.skip:
-                continue
+                stats.count_lines_parsed.increment()
+                if stats.count_lines_parsed.value <= config.options.skip:
+                    continue
 
-            match = format.match(line)
-            if not match:
-                invalid_line(line, 'line did not match')
-                continue
+                match = format.match(line)
+                if not match:
+                    invalid_line(line, 'line did not match')
+                    continue
 
-            valid_lines_count = valid_lines_count + 1
-            if config.options.debug_request_limit and valid_lines_count >= config.options.debug_request_limit:
-                if len(hits) > 0:
-                    Recorder.add_hits(hits)
-                logging.info("Exceeded limit specified in --debug-request-limit, exiting.")
-                return
+                valid_lines_count = valid_lines_count + 1
+                if config.options.debug_request_limit and valid_lines_count >= config.options.debug_request_limit:
+                    if len(hits) > 0:
+                        Recorder.add_hits(hits)
+                    logging.info("Exceeded limit specified in --debug-request-limit, exiting.")
+                    return
 
-            hit = Hit(
-                filename=filename,
-                lineno=lineno,
-                status=format.get('status'),
-                full_path=format.get('path'),
-                is_download=False,
-                is_robot=False,
-                is_error=False,
-                is_redirect=False,
-                args={},
-            )
+                hit = Hit(
+                    filename=filename,
+                    lineno=lineno,
+                    status=format.get('status'),
+                    full_path=format.get('path'),
+                    is_download=False,
+                    is_robot=False,
+                    is_error=False,
+                    is_redirect=False,
+                    args={},
+                    device=None
+                )
 
-            if config.options.regex_group_to_page_cvars_map:
-                self._add_custom_vars_from_regex_groups(hit, format, config.options.regex_group_to_page_cvars_map, True)
+                if config.options.regex_group_to_page_cvars_map:
+                    self._add_custom_vars_from_regex_groups(hit, format, config.options.regex_group_to_page_cvars_map,
+                                                            True)
 
-            if config.options.regex_group_to_visit_cvars_map:
-                self._add_custom_vars_from_regex_groups(hit, format, config.options.regex_group_to_visit_cvars_map, False)
+                if config.options.regex_group_to_visit_cvars_map:
+                    self._add_custom_vars_from_regex_groups(hit, format, config.options.regex_group_to_visit_cvars_map,
+                                                            False)
 
-            if config.options.regex_groups_to_ignore:
-                format.remove_ignored_groups(config.options.regex_groups_to_ignore)
+                if config.options.regex_groups_to_ignore:
+                    format.remove_ignored_groups(config.options.regex_groups_to_ignore)
 
-            # Add http method page cvar
-            try:
-                httpmethod = format.get('method')
-                if config.options.track_http_method and httpmethod != '-':
-                    hit.add_page_custom_var('HTTP-method', httpmethod)
-            except:
-                pass
-
-            try:
-                hit.query_string = format.get('query_string')
-                hit.path = hit.full_path
-            except BaseFormatException:
-                hit.path, _, hit.query_string = hit.full_path.partition(config.options.query_string_delimiter)
-
-            # W3cExtendedFormat detaults to - when there is no query string, but we want empty string
-            if hit.query_string == '-':
-                hit.query_string = ''
-
-            hit.extension = hit.path.rsplit('.')[-1].lower()
-
-            try:
-                hit.referrer = format.get('referrer')
-
-                if hit.referrer.startswith('"'):
-                    hit.referrer = hit.referrer[1:-1]
-            except BaseFormatException:
-                hit.referrer = ''
-            if hit.referrer == '-':
-                hit.referrer = ''
-
-            try:
-                hit.user_agent = format.get('user_agent')
-
-                # in case a format parser included enclosing quotes, remove them so they are not
-                # sent to Matomo
-                if hit.user_agent.startswith('"'):
-                    hit.user_agent = hit.user_agent[1:-1]
-            except BaseFormatException:
-                hit.user_agent = ''
-
-            hit.ip = format.get('ip')
-            try:
-                hit.length = int(format.get('length'))
-            except (ValueError, BaseFormatException):
-                # Some lines or formats don't have a length (e.g. 304 redirects, W3C logs)
-                hit.length = 0
-
-            try:
-                hit.generation_time_milli = float(format.get('generation_time_milli'))
-            except (ValueError, BaseFormatException):
+                # Add http method page cvar
                 try:
-                    hit.generation_time_milli = float(format.get('generation_time_micro')) / 1000
-                except (ValueError, BaseFormatException):
-                    try:
-                        hit.generation_time_milli = float(format.get('generation_time_secs')) * 1000
-                    except (ValueError, BaseFormatException):
-                        hit.generation_time_milli = 0
-
-            if config.options.log_hostname:
-                hit.host = config.options.log_hostname
-            else:
-                try:
-                    hit.host = format.get('host').lower().strip('.')
-
-                    if hit.host.startswith('"'):
-                        hit.host = hit.host[1:-1]
-                except BaseFormatException:
-                    # Some formats have no host.
+                    httpmethod = format.get('method')
+                    if config.options.track_http_method and httpmethod != '-':
+                        hit.add_page_custom_var('HTTP-method', httpmethod)
+                except:
                     pass
 
-            # Add userid
-            try:
-                hit.userid = None
+                try:
+                    hit.query_string = format.get('query_string')
+                    hit.path = hit.full_path
+                except BaseFormatException:
+                    hit.path, _, hit.query_string = hit.full_path.partition(config.options.query_string_delimiter)
 
-                userid = format.get('userid')
-                if userid != '-':
-                    hit.args['uid'] = hit.userid = userid
-            except:
-                pass
+                # W3cExtendedFormat detaults to - when there is no query string, but we want empty string
+                if hit.query_string == '-':
+                    hit.query_string = ''
 
-            # add event info
-            try:
-                hit.event_category = hit.event_action = hit.event_name = None
+                hit.extension = hit.path.rsplit('.')[-1].lower()
 
-                hit.event_category = format.get('event_category')
-                hit.event_action = format.get('event_action')
+                try:
+                    hit.referrer = format.get('referrer')
 
-                hit.event_name = format.get('event_name')
-                if hit.event_name == '-':
-                    hit.event_name = None
-            except:
-                pass
+                    if hit.referrer.startswith('"'):
+                        hit.referrer = hit.referrer[1:-1]
+                except BaseFormatException:
+                    hit.referrer = ''
+                if hit.referrer == '-':
+                    hit.referrer = ''
 
-            # Check if the hit must be excluded.
-            if not all((method(hit) for method in self.check_methods)):
-                continue
+                try:
+                    hit.user_agent = format.get('user_agent')
 
-            # Parse date.
-            # We parse it after calling check_methods as it's quite CPU hungry, and
-            # we want to avoid that cost for excluded hits.
-            date_string = format.get('date')
-            try:
-                hit.date = datetime.datetime.strptime(date_string, format.date_format)
-                hit.date += datetime.timedelta(seconds = config.options.seconds_to_add_to_date)
-            except ValueError as e:
-                invalid_line(line, 'invalid date or invalid format: %s' % str(e))
-                continue
+                    # in case a format parser included enclosing quotes, remove them so they are not
+                    # sent to Matomo
+                    if hit.user_agent.startswith('"'):
+                        hit.user_agent = hit.user_agent[1:-1]
+                except BaseFormatException:
+                    hit.user_agent = ''
 
-            # Parse timezone and subtract its value from the date
-            try:
-                timezone = format.get('timezone')
-                if timezone:
-                    hit.date -= TimeHelper.timedelta_from_timezone(timezone)
-            except BaseFormatException:
-                pass
-            except ValueError:
-                invalid_line(line, 'invalid timezone')
-                continue
+                hit.device = DeviceDetector(hit.user_agent).parse()
 
-            if config.options.replay_tracking:
-                # we need a query string and we only consider requests with piwik.php
-                if not hit.query_string or not self.is_hit_for_tracker(hit):
-                    invalid_line(line, 'no query string, or ' + hit.path.lower() + ' does not end with piwik.php/matomo.php')
+                hit.ip = format.get('ip')
+                try:
+                    hit.length = int(format.get('length'))
+                except (ValueError, BaseFormatException):
+                    # Some lines or formats don't have a length (e.g. 304 redirects, W3C logs)
+                    hit.length = 0
+
+                try:
+                    hit.generation_time_milli = float(format.get('generation_time_milli'))
+                except (ValueError, BaseFormatException):
+                    try:
+                        hit.generation_time_milli = float(format.get('generation_time_micro')) / 1000
+                    except (ValueError, BaseFormatException):
+                        try:
+                            hit.generation_time_milli = float(format.get('generation_time_secs')) * 1000
+                        except (ValueError, BaseFormatException):
+                            hit.generation_time_milli = 0
+
+                if config.options.log_hostname:
+                    hit.host = config.options.log_hostname
+                else:
+                    try:
+                        hit.host = format.get('host').lower().strip('.')
+
+                        if hit.host.startswith('"'):
+                            hit.host = hit.host[1:-1]
+                    except BaseFormatException:
+                        # Some formats have no host.
+                        pass
+
+                # Add userid
+                try:
+                    hit.userid = None
+
+                    userid = format.get('userid')
+                    if userid != '-':
+                        hit.args['uid'] = hit.userid = userid
+                except:
+                    pass
+
+                # add event info
+                try:
+                    hit.event_category = hit.event_action = hit.event_name = None
+
+                    hit.event_category = format.get('event_category')
+                    hit.event_action = format.get('event_action')
+
+                    hit.event_name = format.get('event_name')
+                    if hit.event_name == '-':
+                        hit.event_name = None
+                except:
+                    pass
+
+                # Check if the hit must be excluded.
+                if not all((method(hit) for method in self.check_methods)):
                     continue
 
-                query_arguments = urllib.parse.parse_qs(hit.query_string)
-                if not "idsite" in query_arguments:
-                    invalid_line(line, 'missing idsite')
+                # Parse date.
+                # We parse it after calling check_methods as it's quite CPU hungry, and
+                # we want to avoid that cost for excluded hits.
+                date_string = format.get('date')
+                try:
+                    hit.date = datetime.datetime.strptime(date_string, format.date_format)
+                    hit.date += datetime.timedelta(seconds=config.options.seconds_to_add_to_date)
+                except ValueError as e:
+                    invalid_line(line, 'invalid date or invalid format: %s' % str(e))
                     continue
 
-                hit.args.update((k, v.pop()) for k, v in query_arguments.items())
+                # Parse timezone and subtract its value from the date
+                try:
+                    timezone = format.get('timezone')
+                    if timezone:
+                        hit.date -= TimeHelper.timedelta_from_timezone(timezone)
+                except BaseFormatException:
+                    pass
+                except ValueError:
+                    invalid_line(line, 'invalid timezone')
+                    continue
 
-                if config.options.seconds_to_add_to_date:
-                    for param in ['_idts', '_viewts', '_ects', '_refts']:
-                        if param in hit.args:
-                            hit.args[param] = int(hit.args[param]) + config.options.seconds_to_add_to_date
+                if config.options.replay_tracking:
+                    # we need a query string and we only consider requests with piwik.php
+                    if not hit.query_string or not self.is_hit_for_tracker(hit):
+                        invalid_line(line,
+                                     'no query string, or ' + hit.path.lower() + ' does not end with piwik.php/matomo.php')
+                        continue
 
-            (is_filtered, reason) = self.is_filtered(hit)
-            if is_filtered:
-                filtered_line(line, reason)
-                continue
+                    query_arguments = urllib.parse.parse_qs(hit.query_string)
+                    if not "idsite" in query_arguments:
+                        invalid_line(line, 'missing idsite')
+                        continue
 
-            hits.append(hit)
+                    hit.args.update((k, v.pop()) for k, v in query_arguments.items())
 
-            if len(hits) >= config.options.recorder_max_payload_size * len(Recorder.recorders):
-                Recorder.add_hits(hits)
-                hits = []
+                    if config.options.seconds_to_add_to_date:
+                        for param in ['_idts', '_viewts', '_ects', '_refts']:
+                            if param in hit.args:
+                                hit.args[param] = int(hit.args[param]) + config.options.seconds_to_add_to_date
+
+                (is_filtered, reason) = self.is_filtered(hit)
+                if is_filtered:
+                    filtered_line(line, reason)
+                    continue
+
+                hits.append(hit)
+
+                if len(hits) >= config.options.recorder_max_payload_size * len(Recorder.recorders):
+                    Recorder.add_hits(hits)
+                    hits = []
 
         # add last chunk of hits
         if len(hits) > 0:
@@ -2614,19 +2539,46 @@ class Parser:
                 else:
                     hit.add_visit_custom_var(custom_var_name, value)
 
+
+from colorama import Fore, Style
+
+
+def green(text):
+    return Fore.GREEN + text + Style.RESET_ALL
+
+
+def red(text):
+    return Fore.RED + text + Style.RESET_ALL
+
+
+def cyan(text):
+    return Fore.CYAN + text + Style.RESET_ALL
+
+
 def main():
     """
     Start the importing process.
     """
     stats.set_time_start()
+    print(f"""Starting log collection with:
 
+    Fingerprinting:        [{red('NO') if config.options.no_fingerprint else green('YES')}]     |   disable with --no-fingerprinting
+    Country Detection:     [{red('NO') if config.options.no_country else green('YES')}]     |   disable with --no-country
+    OS Detection:          [{red('NO') if config.options.no_os else green('YES')}]     |   disable with --no-os
+    Browser Detection:     [{red('NO') if config.options.no_browser else green('YES')}]     |   disable with --no-browser
+    Device Detection:      [{red('NO') if config.options.no_device else green('YES')}]     |   disable with --no-device
+
+RUN ID: {cyan(config.run_id)}
+""")
     if config.options.show_progress:
         stats.start_monitor()
 
     recorders = Recorder.launch(config.options.recorders)
 
     try:
+        # pbar = tqdm()
         for filename in config.filenames:
+            # pbar.set_description(f'Processing {filename}')
             parser.parse(filename)
 
         Recorder.wait_empty()
@@ -2640,24 +2592,50 @@ def main():
 
     stats.print_summary()
 
+
 def fatal_error(error, filename=None, lineno=None):
     print('Fatal error: %s' % error, file=sys.stderr)
     if filename and lineno is not None:
         print((
-            'You can restart the import of "%s" from the point it failed by '
-            'specifying --skip=%d on the command line.\n' % (filename, lineno)
+                'You can restart the import of "%s" from the point it failed by '
+                'specifying --skip=%d on the command line.\n' % (filename, lineno)
         ), file=sys.stderr)
     os._exit(1)
+
+
+def initialize_location_db():
+    database_path = os.path.join(data_dir, "location.db")
+    now = datetime.datetime.now()
+    if os.path.exists(database_path):
+        updated = datetime.datetime.fromtimestamp(os.path.getctime(database_path))
+        if not (updated.year != now.year or updated.month != now.month):
+            logging.debug("Using existing GeoIP database, provided by DB-API")
+            return geoip2.database.Reader(database_path)
+
+    logging.debug("Downloading GeoIP database, provided by DB-API")
+    req = urllib.request.Request(
+        f"https://download.db-ip.com/free/dbip-country-lite-{now.year}-{now.month:02d}.mmdb.gz",
+        headers={'User-Agent': 'Accordably/1.0'}
+    )
+    with open(database_path, 'wb') as f:
+        f.write(gzip.decompress(urllib.request.urlopen(req).read()))
+
+    return geoip2.database.Reader(database_path)
+
 
 if __name__ == '__main__':
     try:
         config = Configuration()
+        data_dir = user_data_dir(
+            appname="accordably",
+            appauthor="accordably"
+        )
+        if not os.path.exists(data_dir):
+            os.makedirs(data_dir)
+        location = initialize_location_db()
         # The matomo object depends on the config object, so we have to create
         # it after creating the configuration.
         matomo = MatomoHttpUrllib()
-        # The init_token_auth method may need the matomo option, so we must call
-        # it after creating the matomo object.
-        config.init_token_auth()
         stats = Statistics()
         resolver = config.get_resolver()
         parser = Parser()

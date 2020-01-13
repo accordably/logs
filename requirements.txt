@@ -1,0 +1,6 @@
+appdirs==1.4.4
+geoip2==3.0.0
+-e git://github.com/accordably/device_detector.git#egg=device_detector
+tqdm==4.47.0
+colorama==0.4.3
+mmh3==2.5.1
