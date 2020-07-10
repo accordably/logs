@@ -14,7 +14,9 @@ a = Analysis(
     pathex=['.'],
     binaries=[],
     datas=datas,
-    hiddenimports=[],
+    hiddenimports=[
+        'pkg_resources.py2_warn'
+    ],
     hookspath=[],
     runtime_hooks=[],
     excludes=[],
