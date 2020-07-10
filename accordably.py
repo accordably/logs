@@ -100,6 +100,8 @@ EXCLUDED_USER_AGENTS = (
     'googlestackdrivermonitoring',
 )
 
+VERSION = "0.1.1a"
+
 MATOMO_DEFAULT_MAX_ATTEMPTS = 3
 MATOMO_DEFAULT_DELAY_AFTER_FAILURE = 10
 DEFAULT_SOCKET_TIMEOUT = 300
@@ -2611,7 +2613,7 @@ def initialize_location_db():
     logging.debug("Downloading GeoIP database, provided by DB-API")
     req = urllib.request.Request(
         f"https://download.db-ip.com/free/dbip-country-lite-{now.year}-{now.month:02d}.mmdb.gz",
-        headers={'User-Agent': 'Accordably/1.0'}
+        headers={'User-Agent': f'Accordably/{VERSION}'}
     )
     with open(database_path, 'wb') as f:
         f.write(gzip.decompress(urllib.request.urlopen(req).read()))
