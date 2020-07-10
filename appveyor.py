@@ -86,6 +86,7 @@ class environment:
             self.run(f"{python} -m pip install pyinstaller==3.5")
             self.run(f"{python} -m pip install pytest")
             self.run(f"{python} -m pip install -r requirements.txt")
+            self.run(f"{python} -m pip freeze")
 
     def dist(self):
         """Runs Pyinstaller producing a binary for every platform arch."""
