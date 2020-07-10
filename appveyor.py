@@ -83,7 +83,7 @@ class environment:
 
         for arch, python in self.python:
             self.run(f"{python} -m pip install setuptools")
-            self.run(f"{python} -m pip install pyinstaller")
+            self.run(f"{python} -m pip install pyinstaller==3.5")
             self.run(f"{python} -m pip install pytest")
             self.run(f"{python} -m pip install -r requirements.txt")
 
