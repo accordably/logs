@@ -100,7 +100,7 @@ EXCLUDED_USER_AGENTS = (
     'googlestackdrivermonitoring',
 )
 
-VERSION = "0.1.2a"
+VERSION = "0.1.3a"
 
 MATOMO_DEFAULT_MAX_ATTEMPTS = 3
 MATOMO_DEFAULT_DELAY_AFTER_FAILURE = 10
@@ -917,7 +917,7 @@ class Configuration:
         # Configure logging before calling logging.{debug,info}.
         logging.basicConfig(
             format='%(asctime)s: [%(levelname)s] %(message)s',
-            level=logging.DEBUG if self.options.debug >= 1 else logging.INFO,
+            level=logging.DEBUG if self.options.debug >= 1 else logging.WARNING,
         )
 
         self.options.excluded_useragents = set([s.lower() for s in self.options.excluded_useragents])
