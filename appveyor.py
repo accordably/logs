@@ -36,7 +36,7 @@ class environment:
         # you'll run into permission problems due to docker clobbering
         # up the current working directory.
         LINUX: OrderedDict([
-            (64, "/usr/local/lib/python3.5"),
+            (64, "sudo /usr/local/lib/python3.5"),
             # (32, f"docker run -t -v {os.getcwd()}:/app 32-bit-linux python3"),
         ]),
 
