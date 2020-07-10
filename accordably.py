@@ -100,7 +100,7 @@ EXCLUDED_USER_AGENTS = (
     'googlestackdrivermonitoring',
 )
 
-VERSION = "0.1.1a"
+VERSION = "0.1.2a"
 
 MATOMO_DEFAULT_MAX_ATTEMPTS = 3
 MATOMO_DEFAULT_DELAY_AFTER_FAILURE = 10
@@ -571,8 +571,8 @@ class Configuration:
                  "output of a large log file."
         )
         parser.add_argument(
-            '--url', dest='url', required=False, default="https://accordably.com/api/events/",
-            help="Accordably server URL, eg. https://accordably.com/api/events/",
+            '--url', dest='url', required=False, default="https://accordably.com/api/ingest/",
+            help="Accordably server URL, eg. https://accordably.com/api/ingest/",
         )
         parser.add_argument(
             '--max-hash-collisions', dest='max_hash_collisions', default=100,
