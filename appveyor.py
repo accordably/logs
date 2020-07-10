@@ -74,7 +74,7 @@ class environment:
         # - create dist/ path to circumvent permission errors
         if self.os == self.LINUX:
             # self.run("docker build -t 32-bit-linux -f Dockerfilei386 .")
-            self.run("sudo apt-get install -y python3-dev")
+            self.run("sudo apt-get install -y python3-dev python3-pip")
 
         # special case:
         # install python via homebrew
