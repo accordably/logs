@@ -1,6 +1,4 @@
-#!/usr/bin/python
-# -*- coding: utf-8 -*-
-#
+# -*- coding: future_fstrings -*-
 # License: https://www.gnu.org/licenses/gpl-3.0.html GPL v3 or later
 # Copyright: 2012 - 2020 Matomo/Piwik | 2020 Accordably
 
@@ -42,9 +40,8 @@ import geoip2.database
 import mmh3
 from appdirs import user_data_dir
 from colorama import init as colorama_init
-from tqdm import tqdm
-
 from device_detector import DeviceDetector
+from tqdm import tqdm
 
 colorama_init()
 
@@ -1644,7 +1641,6 @@ class Recorder:
             signed=True,
             seed=seed
         )
-        # hashlib.sha256(f"{seed}{params}".encode("utf-8")).hexdigest()
 
         if hash in self.hashes:
             self.collisions += 1
