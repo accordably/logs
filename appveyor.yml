@@ -1,8 +1,8 @@
 version: 0.1.0a+{build}
 image:
-  - Visual Studio 2019
+  #- Visual Studio 2019
   - Previous Ubuntu1604
-  - macOS
+  #- macOS
 
 # note: on macOS the binary is built using Python 3.7 (installed via Homebrew), because
 # the shipped Python lacks libraries PyInstaller needs.
