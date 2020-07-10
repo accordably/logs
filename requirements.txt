@@ -4,3 +4,5 @@ geoip2==3.0.0
 tqdm==4.47.0
 colorama==0.4.3
 mmh3==2.5.1
+future-fstrings==1.2.0
+tokenize-rt==3.2.0

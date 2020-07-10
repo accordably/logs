@@ -16,7 +16,7 @@ class environment:
     def __init__(self):
         os_mapping = {
             "Visual Studio 2019": self.WIN,
-            "Ubuntu": self.LINUX,
+            "Previous Ubuntu1604": self.LINUX,
             "macOS": self.MACOS
         }
         self.os = os_mapping[os.getenv("APPVEYOR_BUILD_WORKER_IMAGE")]
@@ -36,7 +36,7 @@ class environment:
         # you'll run into permission problems due to docker clobbering
         # up the current working directory.
         LINUX: OrderedDict([
-            (64, "python"),
+            (64, "/usr/bin/python3.5"),
             (32, f"docker run -t -v {os.getcwd()}:/app 32-bit-linux python3"),
         ]),
 
@@ -74,6 +74,7 @@ class environment:
         # - create dist/ path to circumvent permission errors
         if self.os == self.LINUX:
             self.run("docker build -t 32-bit-linux -f Dockerfilei386 .")
+            self.run("sudo apt-get install -y python3-dev python3-pip")
 
         # special case:
         # install python via homebrew
@@ -82,9 +83,10 @@ class environment:
 
         for arch, python in self.python:
             self.run(f"{python} -m pip install setuptools")
-            self.run(f"{python} -m pip install pyinstaller")
+            self.run(f"{python} -m pip install pyinstaller==3.5")
             self.run(f"{python} -m pip install pytest")
             self.run(f"{python} -m pip install -r requirements.txt")
+            self.run(f"{python} -m pip freeze")
 
     def dist(self):
         """Runs Pyinstaller producing a binary for every platform arch."""

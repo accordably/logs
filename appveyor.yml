@@ -1,7 +1,7 @@
 version: 0.1.0a+{build}
 image:
   - Visual Studio 2019
-  - Ubuntu
+  - Previous Ubuntu1604
   - macOS
 
 # note: on macOS the binary is built using Python 3.7 (installed via Homebrew), because
@@ -12,7 +12,7 @@ stack: python 3.6
 for:
   - matrix:
       only:
-        - image: Ubuntu
+        - image: Previous Ubuntu1604
 
     services:
       - docker
