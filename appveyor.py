@@ -83,7 +83,11 @@ class environment:
 
         for arch, python in self.python:
             self.run(f"{python} -m pip install setuptools")
-            self.run(f"{python} -m pip install pyinstaller==3.5")
+            if self.os == self.LINUX and arch == 64:
+                version = "3.5"
+            else:
+                version = "3.6"
+            self.run(f"{python} -m pip install pyinstaller=={version}")
             self.run(f"{python} -m pip install pytest")
             self.run(f"{python} -m pip install -r requirements.txt")
             self.run(f"{python} -m pip freeze")
