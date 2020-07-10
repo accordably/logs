@@ -16,7 +16,7 @@ class environment:
     def __init__(self):
         os_mapping = {
             "Visual Studio 2019": self.WIN,
-            "Ubuntu": self.LINUX,
+            "Previous Ubuntu1604": self.LINUX,
             "macOS": self.MACOS
         }
         self.os = os_mapping[os.getenv("APPVEYOR_BUILD_WORKER_IMAGE")]
@@ -36,7 +36,7 @@ class environment:
         # you'll run into permission problems due to docker clobbering
         # up the current working directory.
         LINUX: OrderedDict([
-            (64, "python"),
+            (64, "python3"),
             (32, f"docker run -t -v {os.getcwd()}:/app 32-bit-linux python3"),
         ]),
 
