@@ -1,7 +1,7 @@
 version: 0.1.0a+{build}
 image:
   - Visual Studio 2019
-  - Ubuntu
+  - Previous Ubuntu1604
   - macOS
 
 # Do not build feature branch with open Pull Requests
@@ -19,7 +19,7 @@ stack: python 3.6
 for:
   - matrix:
       only:
-        - image: Ubuntu
+        - image: Previous Ubuntu1604
 
     services:
       - docker
