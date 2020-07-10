@@ -37,7 +37,7 @@ class environment:
         # up the current working directory.
         LINUX: OrderedDict([
             (64, "python3"),
-            (32, f"docker run -t -v {os.getcwd()}:/app 32-bit-linux python3"),
+            # (32, f"docker run -t -v {os.getcwd()}:/app 32-bit-linux python3"),
         ]),
 
         MACOS: {
@@ -73,7 +73,8 @@ class environment:
         # - build the 32 bit binary for linux on docker
         # - create dist/ path to circumvent permission errors
         if self.os == self.LINUX:
-            self.run("docker build -t 32-bit-linux -f Dockerfilei386 .")
+            # self.run("docker build -t 32-bit-linux -f Dockerfilei386 .")
+            self.run("sudo apt-get install -y python3-dev")
 
         # special case:
         # install python via homebrew
