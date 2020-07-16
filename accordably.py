@@ -41,6 +41,7 @@ import mmh3
 from appdirs import user_data_dir
 from colorama import init as colorama_init
 from device_detector import DeviceDetector
+from geoip2.errors import AddressNotFoundError
 from tqdm import tqdm
 
 colorama_init()
@@ -1737,7 +1738,10 @@ class Recorder:
         return '%s %s' % (date, time.replace('-', ':'))
 
     def get_country(self, ip):
-        return location.country(ip).country.iso_code
+        try:
+            return location.country(ip).country.iso_code
+        except AddressNotFoundError:
+            return None
 
     def get_user_id(self, ip, user_agent):
         hash, _ = mmh3.hash64(
@@ -2574,7 +2578,6 @@ RUN ID: {cyan(config.run_id)}
         for filename in config.filenames:
             # pbar.set_description(f'Processing {filename}')
             parser.parse(filename)
-
         Recorder.wait_empty()
     except KeyboardInterrupt:
         pass
