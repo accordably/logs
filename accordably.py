@@ -147,9 +147,11 @@ class JsonFormat(BaseFormat):
     def check_format_line(self, line):
         try:
             self.json = json.loads(line)
-            return True
+            if 'generation_time_milli' in self.json:
+                return True
         except:
-            return False
+            pass
+        return False
 
     def match(self, line):
         try:
@@ -185,6 +187,49 @@ class JsonFormat(BaseFormat):
     def remove_ignored_groups(self, groups):
         for group in groups:
             del self.json[group]
+
+
+class CaddyV2Format(JsonFormat):
+    def get(self, key):
+        try:
+            if key == "path":
+                return self.json['request']['uri']
+            elif key == "ip":
+                ip, _ = self.json['request']['remote_addr'].split(":")
+                return ip
+            elif key == 'status':
+                return str(self.json['status'])
+            elif key == 'date':
+                dt = datetime.datetime.fromtimestamp(self.json['ts'])
+                return dt.strftime('%Y-%m-%dT%H:%M:%S')
+            elif key in ['event_category', 'event_action', 'event_name']:
+                return None
+            return self.json[key]
+        except KeyError:
+            pass
+        raise BaseFormatException()
+
+    def check_format_line(self, line):
+        try:
+            self.json = json.loads(line)
+            if 'ts' in self.json and "common_log" in self.json:
+                return True
+        except:
+            pass
+        return False
+
+    def match(self, line):
+        try:
+            self.json = json.loads(line)
+            if 'ts' in self.json and "common_log" in self.json:
+                return self
+            return None
+        except:
+            self.json = None
+            return None
+
+    def __init__(self):
+        super(CaddyV2Format, self).__init__('caddy_v2')
 
 
 class RegexFormat(BaseFormat):
@@ -495,7 +540,8 @@ FORMATS = {
     'elb': RegexFormat('elb', _ELB_LOG_FORMAT, '%Y-%m-%dT%H:%M:%S'),
     'nginx_json': JsonFormat('nginx_json'),
     'ovh': RegexFormat('ovh', _OVH_FORMAT),
-    'haproxy': RegexFormat('haproxy', _HAPROXY_FORMAT, '%d/%b/%Y:%H:%M:%S.%f')
+    'haproxy': RegexFormat('haproxy', _HAPROXY_FORMAT, '%d/%b/%Y:%H:%M:%S.%f'),
+    'caddy_v2': CaddyV2Format()
 }
 
 
