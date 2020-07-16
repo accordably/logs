@@ -1748,7 +1748,7 @@ class Recorder:
             f"{ip}-{user_agent}-{config.options.key}",
             signed=True,
         )
-        return hash 
+        return hash
 
     def _get_hit_args(self, hit):
         """
@@ -2566,7 +2566,7 @@ def main():
     Browser Detection:     [{red('NO') if config.options.no_browser else green('YES')}]     |   disable with --no-browser
     Device Detection:      [{red('NO') if config.options.no_device else green('YES')}]     |   disable with --no-device
 
-RUN ID: {cyan(config.run_id)}
+RUN ID: {cyan(config.run_id)}   VERSION: {cyan(VERSION)}
 """)
     if config.options.show_progress:
         stats.start_monitor()
