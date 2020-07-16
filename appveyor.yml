@@ -1,4 +1,4 @@
-version: 0.1.4a+{build}
+version: 0.1.5a+{build}
 image:
   - Visual Studio 2019
   - Previous Ubuntu1604
