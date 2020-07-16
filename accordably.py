@@ -1745,10 +1745,10 @@ class Recorder:
 
     def get_user_id(self, ip, user_agent):
         hash, _ = mmh3.hash64(
-            f"{ip}-{user_agent}",
+            f"{ip}-{user_agent}-{config.options.key}",
             signed=True,
         )
-        return hash
+        return hash 
 
     def _get_hit_args(self, hit):
         """
