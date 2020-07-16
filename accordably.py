@@ -202,6 +202,14 @@ class CaddyV2Format(JsonFormat):
             elif key == 'date':
                 dt = datetime.datetime.fromtimestamp(self.json['ts'])
                 return dt.strftime('%Y-%m-%dT%H:%M:%S')
+            elif key == "user_agent":
+                return self.json['request']['headers']['User-Agent'][0]
+            elif key == 'host':
+                return self.json['request']['host']
+            elif key == 'referrer':
+                return self.json['request']['headers']['Referer'][0]
+            elif key == 'method':
+                return self.json['request']['method']
             elif key in ['event_category', 'event_action', 'event_name']:
                 return None
             return self.json[key]
