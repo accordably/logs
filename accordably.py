@@ -1691,7 +1691,7 @@ class Recorder:
             self.unrecorded_hits = []
 
     def get_hash(self, args, seed=0):
-        params = ''.join(''.join([str(a) for a in sorted(args.values())]))
+        params = ''.join(''.join(sorted([str(a) for a in args.values()])))
 
         hash, _ = mmh3.hash64(
             params,
@@ -1863,7 +1863,6 @@ class Recorder:
             'created': self.date_to_matomo(hit.date),
             'domain': site_id,
         }
-
         args['hash'] = self.get_hash(args)
 
         if config.options.no_fingerprint:
