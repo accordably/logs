@@ -51,7 +51,7 @@ colorama_init()
 ##
 
 STATIC_EXTENSIONS = set((
-                            'gif jpg jpeg png bmp ico svg svgz ttf otf eot woff woff2 class swf css js xml webp'
+                            'gif jpg jpeg png bmp ico svg svgz ttf otf eot woff woff2 class swf css js xml webp map webmanifest'
                         ).split())
 
 STATIC_FILES = set((
@@ -708,11 +708,6 @@ class Configuration:
             '--enable-static', dest='enable_static',
             action='store_true', default=False,
             help="Track static files (images, css, js, ico, ttf, etc.)"
-        )
-        parser.add_argument(
-            '--enable-bots', dest='enable_bots',
-            action='store_true', default=False,
-            help="Track bots. All bot visits will have a Custom Variable set with name='Bot' and value='$Bot_user_agent_here$'"
         )
         parser.add_argument(
             '--enable-http-errors', dest='enable_http_errors',
@@ -1825,25 +1820,26 @@ class Recorder:
             path += config.options.query_string_delimiter + hit.query_string
 
         url = path[:1024]
-        # handle custom variables before generating args dict
-        if config.options.enable_bots:
-            if hit.is_robot:
-                hit.add_visit_custom_var("Bot", hit.user_agent)
-            else:
-                hit.add_visit_custom_var("Not-Bot", hit.user_agent)
 
         hit.add_page_custom_var("HTTP-code", hit.status)
         url_parts = urlsplit(url)
-        url_path = url_parts.path + f"?{url_parts.query}" \
-            if url_parts.query else "" + f"#{url_parts.fragment}" if url_parts.fragment else ""
+        url_path = url_parts.path
+        if url_parts.query:
+            url_path += f"?{url_parts.query}"
+        if url_parts.fragment:
+            url_path += f"#{url_parts.fragment}"
         if hit.referrer:
             ref_parts = urlsplit(hit.referrer)
             ref_domain = ref_parts.netloc
-            ref_path = ref_parts.path + f"?{ref_parts.query}" \
-                if ref_parts.query else "" + f"#{ref_parts.fragment}" if ref_parts.fragment else ""
+            ref_path = ref_parts.path
+            if ref_parts.query:
+                ref_path += f"?{ref_parts.query}"
+            if ref_parts.fragment:
+                ref_path += f"#{ref_parts.fragment}"
         else:
             ref_domain = ""
             ref_path = ""
+
         args = {
             'url_domain': site_id,
             'url_path': url_path if url_path else "/",
@@ -1864,7 +1860,6 @@ class Recorder:
             'domain': site_id,
         }
         args['hash'] = self.get_hash(args)
-
         if config.options.no_fingerprint:
             args['user'] = 0
 
@@ -1885,52 +1880,6 @@ class Recorder:
             args['device_model'] = ""
             args['device_type'] = ""
 
-        # if config.options.replay_tracking:
-        #     # prevent request to be force recorded when option replay-tracking
-        #     args['rec'] = '0'
-        #
-        # # idsite is already determined by resolver
-        # if 'idsite' in hit.args:
-        #     del hit.args['idsite']
-        #
-        # args.update(hit.args)
-        #
-        # if hit.is_download:
-        #     args['download'] = args['url']
-        #
-        # if config.options.enable_bots:
-        #     args['bots'] = '1'
-        #
-        # if hit.is_error or hit.is_redirect:
-        #     args['action_name'] = '%s%sURL = %s%s' % (
-        #         hit.status,
-        #         config.options.title_category_delimiter,
-        #         urllib.parse.quote(args['url'], ''),
-        #         ("%sFrom = %s" % (
-        #             config.options.title_category_delimiter,
-        #             urllib.parse.quote(args['urlref'], '')
-        #         ) if args['urlref'] != '' else '')
-        #     )
-        #
-        # if hit.generation_time_milli > 0:
-        #     args['pf_srv'] = int(hit.generation_time_milli)
-        #
-        # if hit.event_category and hit.event_action:
-        #     args['e_c'] = hit.event_category
-        #     args['e_a'] = hit.event_action
-        #
-        #     if hit.event_name:
-        #         args['e_n'] = hit.event_name
-        #
-        # if hit.length:
-        #     args['bw_bytes'] = hit.length
-        #
-        # # convert custom variable args to JSON
-        # if 'cvar' in args and not isinstance(args['cvar'], str):
-        #     args['cvar'] = json.dumps(args['cvar'])
-        #
-        # if '_cvar' in args and not isinstance(args['_cvar'], str):
-        #     args['_cvar'] = json.dumps(args['_cvar'])
         return UrlHelper.convert_array_args(args)
 
     def _get_host_with_protocol(self, host, main_url):
@@ -2119,19 +2068,17 @@ class Parser:
         user_agent = hit.user_agent.lower()
         for s in itertools.chain(EXCLUDED_USER_AGENTS, config.options.excluded_useragents):
             if s in user_agent:
-                if config.options.enable_bots:
-                    hit.is_robot = True
-                    return True
-                else:
-                    stats.count_lines_skipped_user_agent.increment()
-                    return False
-        if hit.device.is_bot():
-            if config.options.enable_bots:
-                hit.is_robot = True
-                return True
-            else:
                 stats.count_lines_skipped_user_agent.increment()
                 return False
+
+        if hit.device.is_bot():
+            stats.count_lines_skipped_user_agent.increment()
+            return False
+
+        if hit.device.client_type() == "generic" and hit.device.device_brand_name() == "UNK":
+            stats.count_lines_skipped_user_agent.increment()
+            return False
+
         return True
 
     def check_http_error(self, hit):
