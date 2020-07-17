@@ -1691,7 +1691,7 @@ class Recorder:
             self.unrecorded_hits = []
 
     def get_hash(self, args, seed=0):
-        params = ''.join(''.join([str(a) for a in args.values()]))
+        params = ''.join(''.join([str(a) for a in sorted(args.values())]))
 
         hash, _ = mmh3.hash64(
             params,
